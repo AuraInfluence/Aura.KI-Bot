@@ -13,20 +13,13 @@ const ALLOWED_CHANNELS = [
 ];
 
 const CHANNEL_RULES = {
-  "regelwerk": { includeBots: true, preferImages: false, limit: 20 },
-  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 20 },
+  "regelwerk": { includeBots: true, preferImages: false, limit: 30 },
+  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 25 },
   "richtlinien-faq": { includeBots: true, preferImages: true, limit: 12 },
   "agentur-faq": { includeBots: true, preferImages: true, limit: 12 },
 };
 
-const GREETINGS = [
-  "Hey",
-  "Moin",
-  "Servus",
-  "Was geht",
-  "Hi",
-  "Jo",
-];
+const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
 
 if (!DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN fehlt.");
@@ -174,7 +167,7 @@ async function getChannelContext(guild) {
         channelName: channel.name,
         channelId: channel.id,
         mention: `<#${channel.id}>`,
-        text: textLines.slice(0, 30).join("\n"),
+        text: textLines.slice(0, 40).join("\n"),
         images: [...new Set(imageUrls)].slice(0, 6),
         latestCreatorMention,
       });
@@ -216,12 +209,14 @@ client.on("messageCreate", async (message) => {
     await message.channel.sendTyping();
 
     const greeting = pickGreeting();
+    const askerMention = `<@${message.author.id}>`;
     const channelContexts = await getChannelContext(message.guild);
 
     const inputContent = [];
-    let contextText = `Begrüßung für diese Antwort: ${greeting}
+    let contextText = `Fragender Creator: ${askerMention}
+Begrüßung: ${greeting}
 
-User-Frage:
+Frage:
 ${userText}
 
 Server-Kontexte:
@@ -237,31 +232,30 @@ Name: ${c.channelName}
 Mention: ${c.mention}
 `;
         if (c.latestCreatorMention) {
-          contextText += `Letzter erwähnter Creator in diesem Channel: ${c.latestCreatorMention}\n`;
+          contextText += `Letzter Creator in diesem Channel: ${c.latestCreatorMention}\n`;
         }
         contextText += c.text?.trim()
-          ? `Textinhalte:\n${c.text}\n`
-          : `Textinhalte:\n- Keine Textnachrichten gefunden.\n`;
+          ? `Text:\n${c.text}\n`
+          : `Text:\n- Keine Textnachrichten gefunden.\n`;
 
         if (c.images?.length) {
-          contextText += `Hinweis: Dieser Channel enthält Bilder/Infografiken, die zusätzlich analysiert werden.\n`;
+          contextText += `Hinweis: Dieser Channel enthält FAQ-Bilder/Grafiken.\n`;
         }
       }
     }
 
     contextText += `
-WICHTIGE ANTWORTREGELN:
-- Du bist Aura.KI von Aura Influence.
-- Nenne Mitglieder niemals User oder Nutzer, sondern immer Creator.
-- Wenn nach Regeln gefragt wird, fasse die wichtigsten Regeln klar und kurz zusammen, statt nur die Quelle zu nennen.
-- Wenn nach regelwerk gefragt wird, nenne den Channel mit echter Mention, also das Feld "Mention".
-- Wenn nach richtlinien-faq oder agentur-faq gefragt wird, nenne den passenden Channel ebenfalls mit echter Mention.
-- Wenn nach neu-dazugekommen gefragt wird und ein letzter Creator erkannt wurde, erwähne diesen Creator sinnvoll.
-- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus den FAQ-Grafiken im jeweiligen Channel zusammenfasst.
-- Antworte locker, klar, direkt und hilfreich.
-- Verwende am Anfang natürlich eine kurze Begrüßung passend zur vorgegebenen Begrüßung.
-- Nicht unnötig lang.
-- Erfinde nichts.
+WICHTIGE REGELN FÜR DEINE ANTWORT:
+- Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
+- Verwende niemals "User" oder "Nutzer", sondern allgemein immer "Creator".
+- Wenn du über eine konkrete Person sprichst, nutze die echte Mention, wenn vorhanden.
+- Wenn nach "regelwerk" gefragt wird, fasse die wichtigsten Regeln zusammen UND erwähne auch ergänzende Regeln/Hinweise, falls sie im Kontext stehen.
+- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
+- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Mention, nicht als normaler Text.
+- Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
+- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus den FAQ-Grafiken zusammenfasst.
+- Antworte locker, klar, hilfreich und nicht unnötig lang.
+- Keine erfundenen Namen oder Beispiele.
 `;
 
     inputContent.push({
@@ -281,7 +275,7 @@ WICHTIGE ANTWORTREGELN:
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Du sprichst deutsch. Du sprichst Mitglieder immer als Creator an. Du antwortest natürlich, modern und community-nah.",
+        "Du bist Aura.KI von Aura Influence. Du antwortest auf Deutsch, natürlich, community-nah und präzise. Du sagst immer Creator statt User/Nutzer.",
       input: [
         {
           role: "user",
