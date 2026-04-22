@@ -10,6 +10,12 @@ const ALLOWED_CHANNELS = [
   "neu-dazugekommen",
   "richtlinien-faq",
   "agentur-faq",
+  "updates",
+  "information",
+  "umfragen",
+  "tipps-und-tricks",
+  "live-manager",
+  "agentur-info",
 ];
 
 const CHANNEL_RULES = {
@@ -17,6 +23,25 @@ const CHANNEL_RULES = {
   "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 25 },
   "richtlinien-faq": { includeBots: true, preferImages: true, limit: 12 },
   "agentur-faq": { includeBots: true, preferImages: true, limit: 12 },
+  "updates": { includeBots: true, preferImages: false, limit: 20 },
+  "information": { includeBots: true, preferImages: false, limit: 20 },
+  "umfragen": { includeBots: true, preferImages: false, limit: 20 },
+  "tipps-und-tricks": { includeBots: true, preferImages: true, limit: 20 },
+  "live-manager": { includeBots: true, preferImages: false, limit: 20 },
+  "agentur-info": { includeBots: true, preferImages: true, limit: 20 },
+};
+
+const CHANNEL_ALIASES = {
+  "regelwerk": ["regelwerk"],
+  "neu-dazugekommen": ["neu-dazugekommen", "neu dazugekommen"],
+  "richtlinien-faq": ["richtlinien-faq", "richtlinien faq", "richtlinien"],
+  "agentur-faq": ["agentur-faq", "agentur faq"],
+  "updates": ["updates", "update"],
+  "information": ["information", "informationen", "info", "infos"],
+  "umfragen": ["umfragen", "umfrage"],
+  "tipps-und-tricks": ["tipps-und-tricks", "tipps und tricks", "tipps", "tricks"],
+  "live-manager": ["live-manager", "live manager", "livemanager"],
+  "agentur-info": ["agentur-info", "agentur info", "agenturinfo"],
 };
 
 const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
@@ -116,7 +141,36 @@ function cleanTailMentions(text) {
     .trim();
 }
 
-async function getChannelContext(guild) {
+function getAliasesForChannel(wantedName) {
+  return CHANNEL_ALIASES[wantedName] || [wantedName];
+}
+
+function findChannelByWantedName(guild, wantedName) {
+  const aliases = getAliasesForChannel(wantedName).map(normalizeName);
+
+  return guild.channels.cache.find((c) => {
+    if (!c) return false;
+    if (c.type !== ChannelType.GuildText) return false;
+
+    const normalizedChannelName = normalizeName(c.name);
+    return aliases.includes(normalizedChannelName);
+  });
+}
+
+function detectTargetChannel(userText) {
+  const text = normalizeName(userText);
+
+  for (const [target, aliases] of Object.entries(CHANNEL_ALIASES)) {
+    const normalizedAliases = aliases.map(normalizeName);
+    if (normalizedAliases.some((alias) => text.includes(alias))) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
+async function getChannelContext(guild, targetChannel = null) {
   const contexts = [];
 
   try {
@@ -137,14 +191,11 @@ async function getChannelContext(guild) {
 
   if (!me) return contexts;
 
-  for (const wantedName of ALLOWED_CHANNELS) {
-    try {
-      const channel = guild.channels.cache.find((c) => {
-        if (!c) return false;
-        if (c.type !== ChannelType.GuildText) return false;
-        return normalizeName(c.name) === normalizeName(wantedName);
-      });
+  const channelList = targetChannel ? [targetChannel] : ALLOWED_CHANNELS;
 
+  for (const wantedName of channelList) {
+    try {
+      const channel = findChannelByWantedName(guild, wantedName);
       if (!channel) continue;
 
       const perms = channel.permissionsFor(me);
@@ -188,6 +239,7 @@ async function getChannelContext(guild) {
       }
 
       contexts.push({
+        key: wantedName,
         channelName: channel.name,
         channelId: channel.id,
         mention: `<#${channel.id}>`,
@@ -220,7 +272,7 @@ client.on("messageCreate", async (message) => {
     let userText = raw;
 
     if (isMention) {
-      userText = userText.replace(/<@!?\d+>/g, "").trim();
+      userText = userText.replace(/<@!?\\d+>/g, "").trim();
     } else if (isPrefix) {
       userText = raw.slice(PREFIX.length).trim();
     }
@@ -234,7 +286,8 @@ client.on("messageCreate", async (message) => {
 
     const greeting = pickGreeting();
     const askerMention = `<@${message.author.id}>`;
-    const channelContexts = await getChannelContext(message.guild);
+    const detectedTargetChannel = detectTargetChannel(userText);
+    const channelContexts = await getChannelContext(message.guild, detectedTargetChannel);
 
     const inputContent = [];
     let contextText = `Fragender Creator: ${askerMention}
@@ -242,6 +295,9 @@ Begrüßung: ${greeting}
 
 Frage:
 ${userText}
+
+Erkanntes Kanal-Ziel:
+${detectedTargetChannel || "kein eindeutiger Zielkanal"}
 
 Server-Kontexte:
 `;
@@ -252,6 +308,7 @@ Server-Kontexte:
       for (const c of channelContexts) {
         contextText += `
 [CHANNEL]
+Interner Schlüssel: ${c.key}
 Name: ${c.channelName}
 Mention: ${c.mention}
 `;
@@ -272,12 +329,21 @@ Mention: ${c.mention}
 WICHTIGE REGELN FÜR DEINE ANTWORT:
 - Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
 - Verwende niemals "User" oder "Nutzer", sondern allgemein immer "Creator".
-- Wenn du über eine konkrete Person sprichst, nutze die echte Mention, wenn vorhanden.
-- Wenn nach "regelwerk" gefragt wird, fasse die wichtigsten Regeln zusammen UND erwähne auch ergänzende Regeln/Hinweise, falls sie im Kontext stehen.
-- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
-- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Mention, nicht als normaler Text.
+- Wenn die Frage sich klar auf genau einen Channel bezieht, dann antworte NUR zu diesem Channel.
+- Wenn nach "information", "informationen", "info" oder "infos" gefragt wird, ist damit derselbe Channel gemeint: ${CHANNEL_ALIASES.information.join(", ")}.
+- Wenn nach "regelwerk" gefragt wird, erkläre nur das Regelwerk.
+- Wenn nach "updates" gefragt wird, erkläre nur Updates.
+- Wenn nach "agentur-info" gefragt wird, erkläre nur Agentur-Info.
+- Wenn nach "umfragen" gefragt wird, erkläre nur Umfragen.
+- Wenn nach "tipps-und-tricks" gefragt wird, erkläre nur Tipps und Tricks.
+- Wenn nach "live-manager" gefragt wird, erkläre nur Live-Manager.
+- Wenn nach "richtlinien-faq" gefragt wird, erkläre nur Richtlinien-FAQ.
+- Wenn nach "agentur-faq" gefragt wird, erkläre nur Agentur-FAQ.
 - Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
+- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
+- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Channel-Mention, nicht als normaler Text.
 - Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus den FAQ-Grafiken zusammenfasst.
+- Falls der User fragt "was steht in ..." oder "erklär mir ...", fasse den Inhalt des betroffenen Channels kurz und klar zusammen.
 - Antworte locker, klar, hilfreich und nicht unnötig lang.
 - Keine erfundenen Namen oder Beispiele.
 `;
@@ -308,20 +374,28 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
       ],
     });
 
-    let answer = cleanTailMentions(response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten.");
+    let answer = cleanTailMentions(
+      response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten."
+    );
 
-    const fallbackMentions = channelContexts.map((c) => c.mention).filter(Boolean);
     const targetMentions = [];
 
-    if (/regelwerk/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "regelwerk");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/richtlinien/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "richtlinien-faq");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/agentur/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "agentur-faq");
-      if (c?.mention) targetMentions.push(c.mention);
+    if (detectedTargetChannel) {
+      const detectedContext = channelContexts.find((x) => x.key === detectedTargetChannel);
+      if (detectedContext?.mention) {
+        targetMentions.push(detectedContext.mention);
+      }
+    } else {
+      if (/regelwerk/i.test(userText)) {
+        const c = channelContexts.find((x) => x.key === "regelwerk");
+        if (c?.mention) targetMentions.push(c.mention);
+      } else if (/richtlinien/i.test(userText)) {
+        const c = channelContexts.find((x) => x.key === "richtlinien-faq");
+        if (c?.mention) targetMentions.push(c.mention);
+      } else if (/agentur/i.test(userText)) {
+        const c = channelContexts.find((x) => x.key === "agentur-faq");
+        if (c?.mention) targetMentions.push(c.mention);
+      }
     }
 
     if (answer.length < 1500 && targetMentions.length) {
