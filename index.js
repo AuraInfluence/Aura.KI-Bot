@@ -275,18 +275,13 @@ client.on("messageCreate", async (message) => {
 
     let usedContexts = allContexts;
     if (targetChannel) {
-      const filtered = allContexts.filter((c) => normalizeName(c.channelName) === normalizeName(targetChannel));
+      const filtered = allContexts.filter(
+        (c) => normalizeName(c.channelName) === normalizeName(targetChannel)
+      );
       if (filtered.length > 0) usedContexts = filtered;
     }
 
     const prompt = buildPrompt(usedContexts, userText, askerMention, greeting);
-
-    console.log("=== USER QUESTION ===");
-    console.log(userText);
-    console.log("=== TARGET CHANNEL ===");
-    console.log(targetChannel || "keiner");
-    console.log("=== USED CONTEXT COUNT ===");
-    console.log(usedContexts.length);
 
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
@@ -312,7 +307,9 @@ client.on("messageCreate", async (message) => {
   } catch (error) {
     console.error("Fehler im messageCreate-Handler:", error);
     try {
-      await message.reply(`Es gab gerade einen Fehler. Versuch es gleich nochmal.\nFehler: ${error.message?.slice(0, 300) || "unbekannt"}`);
+      await message.reply(
+        `Es gab gerade einen Fehler. Versuch es gleich nochmal.\nFehler: ${error.message?.slice(0, 300) || "unbekannt"}`
+      );
     } catch {}
   }
 });
