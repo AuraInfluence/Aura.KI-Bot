@@ -103,6 +103,36 @@ function startTyping(channel) {
   };
 }
 
+async function fetchRecent(channel, limit = 20, includeBots = true) {
+  try {
+    const msgs = await channel.messages.fetch({
+      limit: Math.min(50, Math.max(1, limit)),
+    });
+
+    const arr = [...msgs.values()].reverse();
+
+    return arr
+      .filter((m) => includeBots || !m.author.bot)
+      .map((m) => ({
+        author: m.author.username,
+        author_id: m.author.id,
+        is_bot: m.author.bot,
+        content: m.content || "",
+        created_at: m.createdAt.toISOString(),
+        images: [...m.attachments.values()]
+          .filter(
+            (a) =>
+              a.contentType?.startsWith("image/") ||
+              /\.(png|jpe?g|webp|gif)$/i.test(a.url)
+          )
+          .map((a) => a.url),
+      }));
+  } catch (e) {
+    console.warn("fetchRecent err", e?.message);
+    return [];
+  }
+}
+
 function normalizeChannelName(name) {
   return String(name || "")
     .toLowerCase()
@@ -126,11 +156,12 @@ async function findChannelsByHints(guild, hints) {
     const rawName = String(c.name || "").toLowerCase();
     const normalizedName = normalizeChannelName(c.name);
 
-    return rawHints.some((h) => rawName === h) ||
-           normalizedHints.some((h) => normalizedName === h);
+    return (
+      rawHints.some((h) => rawName === h) ||
+      normalizedHints.some((h) => normalizedName === h)
+    );
   });
 }
-
 async function callEdgeAi(payload) {
   const r = await fetch(EDGEAI, {
     method: "POST",
