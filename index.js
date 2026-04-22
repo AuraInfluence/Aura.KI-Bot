@@ -19,16 +19,16 @@ const ALLOWED_CHANNELS = [
 ];
 
 const CHANNEL_RULES = {
-  "regelwerk": { includeBots: true, preferImages: false, limit: 30 },
-  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 25 },
-  "richtlinien-faq": { includeBots: true, preferImages: true, limit: 12 },
-  "agentur-faq": { includeBots: true, preferImages: true, limit: 12 },
-  "updates": { includeBots: true, preferImages: false, limit: 20 },
-  "information": { includeBots: true, preferImages: false, limit: 20 },
-  "umfragen": { includeBots: true, preferImages: false, limit: 20 },
-  "tipps-und-tricks": { includeBots: true, preferImages: true, limit: 20 },
-  "live-manager": { includeBots: true, preferImages: false, limit: 20 },
-  "agentur-info": { includeBots: true, preferImages: true, limit: 20 },
+  "regelwerk": { includeBots: true, limit: 30 },
+  "neu-dazugekommen": { includeBots: true, limit: 25 },
+  "richtlinien-faq": { includeBots: true, limit: 15 },
+  "agentur-faq": { includeBots: true, limit: 15 },
+  "updates": { includeBots: true, limit: 20 },
+  "information": { includeBots: true, limit: 20 },
+  "umfragen": { includeBots: true, limit: 20 },
+  "tipps-und-tricks": { includeBots: true, limit: 20 },
+  "live-manager": { includeBots: true, limit: 20 },
+  "agentur-info": { includeBots: true, limit: 20 },
 };
 
 const CHANNEL_ALIASES = {
@@ -44,21 +44,6 @@ const CHANNEL_ALIASES = {
   "agentur-info": ["agentur-info", "agentur info", "agenturinfo"],
 };
 
-const CHANNEL_LABELS = {
-  "regelwerk": "Regelwerk",
-  "neu-dazugekommen": "Neu-dazugekommen",
-  "richtlinien-faq": "Richtlinien-FAQ",
-  "agentur-faq": "Agentur-FAQ",
-  "updates": "Updates",
-  "information": "Informationen",
-  "umfragen": "Umfragen",
-  "tipps-und-tricks": "Tipps & Tricks",
-  "live-manager": "Live-Manager",
-  "agentur-info": "Agenturinfo",
-};
-
-const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
-
 if (!DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN fehlt.");
   process.exit(1);
@@ -69,9 +54,7 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const client = new Client({
   intents: [
@@ -103,8 +86,28 @@ function normalizeName(text) {
     .trim();
 }
 
-function pickGreeting() {
-  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+function splitMessage(text, maxLength = 1900) {
+  const chunks = [];
+  let remaining = String(text || "").trim();
+
+  while (remaining.length > maxLength) {
+    let cut = remaining.lastIndexOf("\n", maxLength);
+    if (cut < 900) cut = remaining.lastIndexOf(". ", maxLength);
+    if (cut < 900) cut = maxLength;
+
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+
+  if (remaining.length) chunks.push(remaining);
+  return chunks;
+}
+
+function cleanText(text) {
+  return String(text || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\s+$/g, "")
+    .trim();
 }
 
 function extractImageUrls(message) {
@@ -130,36 +133,27 @@ function extractMentionedUserIds(text) {
   return matches.map((m) => m.replace(/\D/g, ""));
 }
 
-function splitMessage(text, maxLength = 1900) {
-  const chunks = [];
-  let remaining = String(text || "").trim();
+function detectTargetChannel(userText) {
+  const normalizedText = normalizeName(userText);
 
-  while (remaining.length > maxLength) {
-    let cut = remaining.lastIndexOf("\n", maxLength);
-    if (cut < 900) cut = remaining.lastIndexOf(". ", maxLength);
-    if (cut < 900) cut = maxLength;
+  const entries = Object.entries(CHANNEL_ALIASES).sort((a, b) => {
+    const aLen = Math.max(...a[1].map((x) => normalizeName(x).length));
+    const bLen = Math.max(...b[1].map((x) => normalizeName(x).length));
+    return bLen - aLen;
+  });
 
-    chunks.push(remaining.slice(0, cut).trim());
-    remaining = remaining.slice(cut).trim();
+  for (const [key, aliases] of entries) {
+    const normalizedAliases = aliases.map(normalizeName);
+    if (normalizedAliases.some((alias) => normalizedText.includes(alias))) {
+      return key;
+    }
   }
 
-  if (remaining.length) chunks.push(remaining);
-  return chunks;
-}
-
-function cleanTailMentions(text) {
-  return String(text || "")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/\s+$/g, "")
-    .trim();
-}
-
-function getAliasesForChannel(wantedName) {
-  return CHANNEL_ALIASES[wantedName] || [wantedName];
+  return null;
 }
 
 function findChannelByWantedName(guild, wantedName) {
-  const aliases = getAliasesForChannel(wantedName).map(normalizeName);
+  const aliases = (CHANNEL_ALIASES[wantedName] || [wantedName]).map(normalizeName);
 
   return guild.channels.cache.find((c) => {
     if (!c) return false;
@@ -168,25 +162,6 @@ function findChannelByWantedName(guild, wantedName) {
     const normalizedChannelName = normalizeName(c.name);
     return aliases.includes(normalizedChannelName);
   });
-}
-
-function detectTargetChannel(userText) {
-  const text = normalizeName(userText);
-
-  const sortedEntries = Object.entries(CHANNEL_ALIASES).sort((a, b) => {
-    const aMax = Math.max(...a[1].map((x) => normalizeName(x).length));
-    const bMax = Math.max(...b[1].map((x) => normalizeName(x).length));
-    return bMax - aMax;
-  });
-
-  for (const [target, aliases] of sortedEntries) {
-    const normalizedAliases = aliases.map(normalizeName);
-    if (normalizedAliases.some((alias) => text.includes(alias))) {
-      return target;
-    }
-  }
-
-  return null;
 }
 
 async function getChannelContext(guild, targetChannel = null) {
@@ -210,9 +185,9 @@ async function getChannelContext(guild, targetChannel = null) {
 
   if (!me) return contexts;
 
-  const channelList = targetChannel ? [targetChannel] : ALLOWED_CHANNELS;
+  const wantedChannels = targetChannel ? [targetChannel] : ALLOWED_CHANNELS;
 
-  for (const wantedName of channelList) {
+  for (const wantedName of wantedChannels) {
     try {
       const channel = findChannelByWantedName(guild, wantedName);
       if (!channel) continue;
@@ -221,12 +196,7 @@ async function getChannelContext(guild, targetChannel = null) {
       if (!perms?.has(PermissionsBitField.Flags.ViewChannel)) continue;
       if (!perms?.has(PermissionsBitField.Flags.ReadMessageHistory)) continue;
 
-      const rule = CHANNEL_RULES[wantedName] || {
-        includeBots: false,
-        preferImages: false,
-        limit: 10,
-      };
-
+      const rule = CHANNEL_RULES[wantedName] || { includeBots: false, limit: 10 };
       const messages = await channel.messages.fetch({ limit: rule.limit });
       const sorted = [...messages.values()].reverse();
 
@@ -259,9 +229,7 @@ async function getChannelContext(guild, targetChannel = null) {
 
       contexts.push({
         key: wantedName,
-        label: CHANNEL_LABELS[wantedName] || wantedName,
         channelName: channel.name,
-        channelId: channel.id,
         mention: `<#${channel.id}>`,
         text: textLines.slice(0, 40).join("\n"),
         images: [...new Set(imageUrls)].slice(0, 6),
@@ -275,103 +243,6 @@ async function getChannelContext(guild, targetChannel = null) {
   return contexts;
 }
 
-function isChannelQuestion(userText) {
-  const t = normalizeName(userText);
-  return (
-    t.includes("was-steht") ||
-    t.includes("was-ist") ||
-    t.includes("erklar") ||
-    t.includes("erklaer") ||
-    t.includes("wofur-ist") ||
-    t.includes("wofuer-ist")
-  );
-}
-
-async function buildNiceChannelAnswer({
-  askerMention,
-  userText,
-  targetContext,
-}) {
-  const label = targetContext.label;
-  const mention = targetContext.mention;
-
-  const prompt = `
-Du schreibst eine schöne Discord-Antwort auf Deutsch.
-
-Aufgabe:
-Der User fragt nach genau einem Server-Channel. Erkläre den Channel kurz, natürlich und hilfreich.
-
-Wichtige Regeln:
-- Antworte in 3 bis 5 Sätzen.
-- Klang natürlich, freundlich und hochwertig.
-- Nicht zu kurz, nicht zu lang.
-- Nenne den Channel IMMER mit dieser echten Mention: ${mention}
-- Verwende keine andere Channel-Schreibweise als diese Mention.
-- Schreibe NICHT "#unbekannt".
-- Schreibe NICHT doppelte Formulierungen wie "Information, Information".
-- Schreibe NICHT komische Füllsätze wie "die letzten Informationen darüber".
-- Wenn Inhalt aus dem Channel-Kontext kommt, fasse ihn sauber zusammen.
-- Wenn wenig Inhalt da ist, erkläre stattdessen sinnvoll, wofür der Channel da ist.
-- Starte mit ${askerMention}
-- Kein "User", sondern "Creator".
-- Am Ende gern ein kurzer natürlicher Zusatz wie:
-  "Wenn du zu einem Punkt daraus mehr wissen willst, sag einfach Bescheid."
-- Aber nur wenn es natürlich passt.
-
-Frage vom Creator:
-${userText}
-
-Channel-Name intern:
-${targetContext.key}
-
-Channel-Label:
-${label}
-
-Channel-Kontext:
-${targetContext.text || "Keine Textnachrichten gefunden."}
-`;
-
-  const inputContent = [
-    {
-      type: "input_text",
-      text: prompt,
-    },
-  ];
-
-  for (const imageUrl of targetContext.images || []) {
-    inputContent.push({
-      type: "input_image",
-      image_url: imageUrl,
-    });
-  }
-
-  const response = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    instructions:
-      "Du bist Aura.KI von Aura Influence. Du formulierst schön, natürlich, klar und community-nah. Bei Channel-Erklärungen schreibst du nicht zu knapp, sondern angenehm und hilfreich.",
-    input: [
-      {
-        role: "user",
-        content: inputContent,
-      },
-    ],
-  });
-
-  let answer = cleanTailMentions(
-    response.output_text?.trim() || `${askerMention} In ${mention} findest du die wichtigsten Infos zu diesem Bereich.`
-  );
-
-  if (!answer.includes(mention)) {
-    answer = `${askerMention} In ${mention} findest du die wichtigsten Infos zu ${label}.`;
-  }
-
-  if (/#unbekannt/i.test(answer)) {
-    answer = answer.replace(/#unbekannt/gi, mention);
-  }
-
-  return answer;
-}
-
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
@@ -381,9 +252,7 @@ client.on("messageCreate", async (message) => {
     if (!raw) return;
 
     const lower = raw.toLowerCase();
-    const isPrefix = lower.startsWith(PREFIX);
-
-    if (!isPrefix) return;
+    if (!lower.startsWith(PREFIX)) return;
 
     const userText = raw.slice(PREFIX.length).trim();
 
@@ -396,43 +265,16 @@ client.on("messageCreate", async (message) => {
 
     const askerMention = `<@${message.author.id}>`;
     const detectedTargetChannel = detectTargetChannel(userText);
-
-    if (detectedTargetChannel && isChannelQuestion(userText)) {
-      const channelContexts = await getChannelContext(message.guild, detectedTargetChannel);
-      const targetContext = channelContexts.find((x) => x.key === detectedTargetChannel);
-
-      if (!targetContext) {
-        await message.reply(
-          `${askerMention} Ich konnte den passenden Channel dazu gerade nicht sauber finden. Schau bitte kurz, ob der Kanalname genau so existiert oder schreib mir den Namen nochmal exakt.`
-        );
-        return;
-      }
-
-      const answer = await buildNiceChannelAnswer({
-        askerMention,
-        userText,
-        targetContext,
-      });
-
-      const parts = splitMessage(answer, 1900);
-      for (const part of parts) {
-        await message.reply({
-          content: part,
-          allowedMentions: { parse: ["users", "roles"] },
-        });
-      }
-      return;
-    }
-
-    const greeting = pickGreeting();
-    const channelContexts = await getChannelContext(message.guild);
+    const channelContexts = await getChannelContext(message.guild, detectedTargetChannel);
 
     const inputContent = [];
     let contextText = `Fragender Creator: ${askerMention}
-Begrüßung: ${greeting}
 
 Frage:
 ${userText}
+
+Erkanntes Kanal-Ziel:
+${detectedTargetChannel || "kein eindeutiger Zielkanal"}
 
 Server-Kontexte:
 `;
@@ -444,7 +286,6 @@ Server-Kontexte:
         contextText += `
 [CHANNEL]
 Interner Schlüssel: ${c.key}
-Label: ${c.label}
 Name: ${c.channelName}
 Mention: ${c.mention}
 `;
@@ -456,19 +297,23 @@ Mention: ${c.mention}
           : `Text:\n- Keine Textnachrichten gefunden.\n`;
 
         if (c.images?.length) {
-          contextText += `Hinweis: Dieser Channel enthält FAQ-Bilder/Grafiken.\n`;
+          contextText += `Hinweis: Dieser Channel enthält Bilder oder Grafiken.\n`;
         }
       }
     }
 
     contextText += `
 WICHTIGE REGELN FÜR DEINE ANTWORT:
-- Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
-- Verwende niemals "User" oder "Nutzer", sondern immer "Creator".
-- Antworte locker, klar, hilfreich und natürlich.
-- Nicht unnötig kurz.
-- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
-- Keine erfundenen Namen, keine erfundenen Beispiele.
+- Sprich den fragenden Creator am Anfang mit seiner Mention an.
+- Verwende immer das Wort "Creator", nicht "User" oder "Nutzer".
+- Wenn die Frage klar zu einem bestimmten Channel gehört, antworte auf Basis genau dieses Channels.
+- Wenn du einen Channel erwähnst, nutze die echte Mention aus dem Feld "Mention".
+- Fasse Inhalte natürlich, hilfreich und verständlich zusammen.
+- Wenn nach einem Channel gefragt wird wie "Was steht in Informationen?", "Was steht in Agenturinfo?" oder "Was steht im Regelwerk?", lies den passenden Channel-Kontext und erkläre den Inhalt in natürlicher Sprache.
+- Erfinde nichts dazu.
+- Wenn etwas unklar ist, sag das ehrlich.
+- Antworte nicht unnötig kurz, aber auch nicht zu lang.
+- Keine komischen Platzhalter wie #unbekannt.
 `;
 
     inputContent.push({
@@ -488,7 +333,7 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI von Aura Influence. Du antwortest auf Deutsch, natürlich, community-nah, präzise und hilfreich. Du sollst nicht zu knapp antworten, wenn eine etwas schönere Antwort besser passt.",
+        "Du bist Aura.KI von Aura Influence. Du antwortest auf Deutsch, natürlich, klar, hilfreich und community-nah. Deine Antworten sollen aus den gegebenen Channel-Inhalten entstehen.",
       input: [
         {
           role: "user",
@@ -497,23 +342,5 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
       ],
     });
 
-    let answer = cleanTailMentions(
-      response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten."
-    );
-
-    const parts = splitMessage(answer, 1900);
-    for (const part of parts) {
-      await message.reply({
-        content: part,
-        allowedMentions: { parse: ["users", "roles"] },
-      });
-    }
-  } catch (error) {
-    console.error("Fehler im messageCreate-Handler:", error);
-    try {
-      await message.reply("Es gab gerade einen Fehler. Versuch es gleich nochmal.");
-    } catch {}
-  }
-});
-
-client.login(DISCORD_TOKEN);
+    const answer = cleanText(
+      response.output_text?.trim() || "Ich ko
