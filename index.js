@@ -103,34 +103,33 @@ function startTyping(channel) {
   };
 }
 
-async function fetchRecent(channel, limit = 20, includeBots = true) {
-  try {
-    const msgs = await channel.messages.fetch({
-      limit: Math.min(50, Math.max(1, limit)),
-    });
+async function findChannelsByHints(guild, hints) {
+  if (!guild) return [];
 
-    const arr = [...msgs.values()].reverse();
+  const all = [...guild.channels.cache.values()].filter((c) => c.isTextBased?.());
 
-    return arr
-      .filter((m) => includeBots || !m.author.bot)
-      .map((m) => ({
-        author: m.author.username,
-        author_id: m.author.id,
-        is_bot: m.author.bot,
-        content: m.content || "",
-        created_at: m.createdAt.toISOString(),
-        images: [...m.attachments.values()]
-          .filter(
-            (a) =>
-              a.contentType?.startsWith("image/") ||
-              /\.(png|jpe?g|webp|gif)$/i.test(a.url)
-          )
-          .map((a) => a.url),
-      }));
-  } catch (e) {
-    console.warn("fetchRecent err", e?.message);
-    return [];
-  }
+  if (!hints || !hints.length || hints.includes("*")) return all;
+
+  const normalizeChannelName = (name) =>
+    String(name || "")
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "")
+      .trim();
+
+  const rawHints = hints.map((h) => String(h).toLowerCase().trim());
+  const normalizedHints = hints.map((h) => normalizeChannelName(h));
+
+  return all.filter((c) => {
+    const rawName = String(c.name || "").toLowerCase();
+    const normalizedName = normalizeChannelName(c.name);
+
+    return (
+      rawHints.some((h) => rawName === h) ||
+      normalizedHints.some((h) => normalizedName === h)
+    );
+  });
 }
 
 function normalizeChannelName(name) {
