@@ -10,6 +10,12 @@ const ALLOWED_CHANNELS = [
   "neu-dazugekommen",
   "richtlinien-faq",
   "agentur-faq",
+  "updates",
+  "information",
+  "umfragen",
+  "tipps-und-tricks",
+  "live-manager",
+  "agentur-info",
 ];
 
 const CHANNEL_RULES = {
@@ -17,6 +23,12 @@ const CHANNEL_RULES = {
   "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 25 },
   "richtlinien-faq": { includeBots: true, preferImages: true, limit: 12 },
   "agentur-faq": { includeBots: true, preferImages: true, limit: 12 },
+  "updates": { includeBots: true, preferImages: true, limit: 20 },
+  "information": { includeBots: true, preferImages: true, limit: 20 },
+  "umfragen": { includeBots: true, preferImages: true, limit: 20 },
+  "tipps-und-tricks": { includeBots: true, preferImages: true, limit: 20 },
+  "live-manager": { includeBots: true, preferImages: true, limit: 20 },
+  "agentur-info": { includeBots: true, preferImages: true, limit: 20 },
 };
 
 const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
@@ -263,7 +275,7 @@ Mention: ${c.mention}
           : `Text:\n- Keine Textnachrichten gefunden.\n`;
 
         if (c.images?.length) {
-          contextText += `Hinweis: Dieser Channel enthält FAQ-Bilder/Grafiken.\n`;
+          contextText += `Hinweis: Dieser Channel enthält Bilder/Grafiken.\n`;
         }
       }
     }
@@ -277,7 +289,7 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
 - Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
 - Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Mention, nicht als normaler Text.
 - Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
-- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus den FAQ-Grafiken zusammenfasst.
+- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus Bildern/Grafiken im jeweiligen Channel zusammenfasst.
 - Antworte locker, klar, hilfreich und nicht unnötig lang.
 - Keine erfundenen Namen oder Beispiele.
 `;
@@ -308,9 +320,10 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
       ],
     });
 
-    let answer = cleanTailMentions(response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten.");
+    let answer = cleanTailMentions(
+      response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten."
+    );
 
-    const fallbackMentions = channelContexts.map((c) => c.mention).filter(Boolean);
     const targetMentions = [];
 
     if (/regelwerk/i.test(userText)) {
@@ -321,6 +334,24 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
       if (c?.mention) targetMentions.push(c.mention);
     } else if (/agentur/i.test(userText)) {
       const c = channelContexts.find((x) => x.channelName === "agentur-faq");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/updates/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "updates");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/information/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "information");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/umfragen/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "umfragen");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/tipps|tricks/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "tipps-und-tricks");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/live/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "live-manager");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/agentur-info|agentur info/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "agentur-info");
       if (c?.mention) targetMentions.push(c.mention);
     }
 
