@@ -1,239 +1,69 @@
-import { Client, GatewayIntentBits, ChannelType, PermissionsBitField } from "discord.js";
-import OpenAI from "openai";
+function shouldRespond(message) {
+  if (message.author.bot) return false;
+  if (!message.content) return false;
 
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const PREFIX = "?aura";
+  const mentioned = message.mentions.has(client.user);
+  const content = message.content.trim();
+  const lower = content.toLowerCase();
 
-const ALLOWED_CHANNELS = [
-  "regelwerk",
-  "neu-dazugekommen",
-  "richtlinien-faq",
-  "agentur-faq",
-  "updates",
-  "information",
-  "umfragen",
-  "tipps-und-tricks",
-  "live-manager",
-  "agentur-info",
-];
+  let triggered = false;
+  let cleaned = content;
 
-const CHANNEL_RULES = {
-  "regelwerk": { includeBots: true, limit: 30 },
-  "neu-dazugekommen": { includeBots: true, limit: 25 },
-  "richtlinien-faq": { includeBots: true, limit: 12 },
-  "agentur-faq": { includeBots: true, limit: 12 },
-  "updates": { includeBots: true, limit: 20 },
-  "information": { includeBots: true, limit: 20 },
-  "umfragen": { includeBots: true, limit: 20 },
-  "tipps-und-tricks": { includeBots: true, limit: 20 },
-  "live-manager": { includeBots: true, limit: 20 },
-  "agentur-info": { includeBots: true, limit: 20 },
-};
+  for (const w of SETTINGS.triggerwords) {
+    const tw = String(w).toLowerCase();
+    if (lower.startsWith(`!${tw}`)) {
+      triggered = true;
+      cleaned = content.slice(tw.length + 1).trim();
+      break;
+    }
+  }
 
-const CHANNEL_ALIASES = {
-  "regelwerk": ["regelwerk"],
-  "neu-dazugekommen": ["neu-dazugekommen", "neu dazugekommen", "neudazugekommen"],
-  "richtlinien-faq": ["richtlinien-faq", "richtlinien faq", "richtlinienfaq"],
-  "agentur-faq": ["agentur-faq", "agentur faq", "agenturfaq"],
-  "updates": ["updates", "update"],
-  "information": ["information", "informationen", "info", "infos"],
-  "umfragen": ["umfragen", "umfrage"],
-  "tipps-und-tricks": [
-    "tipps-und-tricks",
-    "tipps und tricks",
-    "tipps-und-trick",
-    "tipps tricks",
-    "tipps",
-    "tricks",
-  ],
-  "live-manager": ["live-manager", "live manager", "livemanager"],
-  "agentur-info": ["agentur-info", "agentur info", "agenturinfo"],
-};
+  if (SETTINGS.requiremention) {
+    if (!mentioned) return false;
+  } else if (!mentioned && !triggered) {
+    return false;
+  }
 
-const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
+  if (mentioned) {
+    cleaned = cleaned.replace(/<@!?(\d+)>/g, "").trim();
+  }
 
-if (!DISCORD_TOKEN) {
-  console.error("DISCORD_TOKEN fehlt.");
-  process.exit(1);
+  return cleaned;
 }
 
-if (!OPENAI_API_KEY) {
-  console.error("OPENAI_API_KEY fehlt.");
-  process.exit(1);
-}
-
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
-
-process.on("unhandledRejection", (error) => {
-  console.error("UNHANDLED REJECTION:", error);
-});
-
-process.on("uncaughtException", (error) => {
-  console.error("UNCAUGHT EXCEPTION:", error);
-});
-
-client.once("ready", () => {
-  console.log(`✅ Bot ist online als ${client.user.tag}`);
-});
-
-function normalizeName(text) {
-  return String(text || "")
+function normalizeChannelName(name) {
+  return String(name || "")
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s-]/gu, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
+    .replace(/[^a-z0-9]+/g, "")
     .trim();
 }
 
-function pickGreeting() {
-  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-}
-
-function extractMentionedUserIds(text) {
-  const matches = String(text || "").match(/<@!?(\d+)>/g) || [];
-  return matches.map((m) => m.replace(/\D/g, ""));
-}
-
-function splitMessage(text, maxLength = 1900) {
-  const chunks = [];
-  let remaining = String(text || "").trim();
-
-  while (remaining.length > maxLength) {
-    let cut = remaining.lastIndexOf("\n", maxLength);
-    if (cut < 900) cut = remaining.lastIndexOf(". ", maxLength);
-    if (cut < 900) cut = maxLength;
-
-    chunks.push(remaining.slice(0, cut).trim());
-    remaining = remaining.slice(cut).trim();
-  }
-
-  if (remaining.length) chunks.push(remaining);
-  return chunks;
-}
-
-function getAliasesForChannel(wantedName) {
-  return CHANNEL_ALIASES[wantedName] || [wantedName];
-}
-
-function findMatchingChannel(guild, wantedName) {
-  const aliases = getAliasesForChannel(wantedName).map(normalizeName);
-
-  return guild.channels.cache.find((c) => {
-    if (!c) return false;
-    if (c.type !== ChannelType.GuildText) return false;
-
-    const channelName = normalizeName(c.name);
-    return aliases.includes(channelName);
-  });
-}
-
-async function getChannelContext(guild) {
-  const contexts = [];
-
-  try {
-    await guild.channels.fetch();
-  } catch (err) {
-    console.error("Konnte Channels nicht laden:", err);
-  }
-
-  let me = guild.members.me;
-  try {
-    if (!me && client.user?.id) {
-      me = await guild.members.fetch(client.user.id);
-    }
-  } catch (err) {
-    console.error("Konnte Bot-Mitglied nicht laden:", err);
-    return contexts;
-  }
-
-  if (!me) return contexts;
-
-  for (const wantedName of ALLOWED_CHANNELS) {
-    try {
-      const channel = findMatchingChannel(guild, wantedName);
-      if (!channel) continue;
-
-      const perms = channel.permissionsFor(me);
-      if (!perms?.has(PermissionsBitField.Flags.ViewChannel)) continue;
-      if (!perms?.has(PermissionsBitField.Flags.ReadMessageHistory)) continue;
-
-      const rule = CHANNEL_RULES[wantedName] || {
-        includeBots: false,
-        limit: 10,
-      };
-
-      const messages = await channel.messages.fetch({ limit: rule.limit });
-      const sorted = [...messages.values()].reverse();
-
-      const textLines = [];
-      let latestCreatorMention = null;
-
-      for (const m of sorted) {
-        const hasText = !!m.content?.trim();
-        if (!rule.includeBots && m.author.bot) continue;
-        if (!hasText) continue;
-
-        const authorLabel = m.author.bot ? `${m.author.username} [BOT]` : m.author.username;
-        textLines.push(`- ${authorLabel}: ${m.content.trim()}`);
-
-        const ids = extractMentionedUserIds(m.content);
-        if (wantedName === "neu-dazugekommen" && ids.length > 0) {
-          latestCreatorMention = `<@${ids[ids.length - 1]}>`;
-        }
-      }
-
-      contexts.push({
-        key: wantedName,
-        channelName: channel.name,
-        mention: `<#${channel.id}>`,
-        text: textLines.slice(0, 40).join("\n"),
-        latestCreatorMention,
-      });
-    } catch (err) {
-      console.error(`Fehler beim Lesen von ${wantedName}:`, err);
-    }
-  }
-
-  return contexts;
-}
+const CHANNEL_ALIASES = {
+  "regelwerk": ["regelwerk"],
+  "neu-dazugekommen": ["neu-dazugekommen", "neudazugekommen", "neu dazugekommen"],
+  "richtlinien-faq": ["richtlinien-faq", "richtlinienfaq", "richtlinien faq"],
+  "agentur-faq": ["agentur-faq", "agenturfaq", "agentur faq"],
+  "updates": ["updates", "update"],
+  "information": ["information", "informationen", "info", "infos"],
+  "umfragen": ["umfragen", "umfrage"],
+  "tipps-und-tricks": ["tipps-und-tricks", "tippsundtricks", "tipps und tricks", "tipps", "tricks"],
+  "live-manager": ["live-manager", "livemanager", "live manager"],
+  "agentur-info": ["agentur-info", "agenturinfo", "agentur info"]
+};
 
 function detectTargetChannel(userText) {
-  const text = String(userText || "").toLowerCase().trim();
+  const raw = String(userText || "").toLowerCase();
+  const compact = normalizeChannelName(userText);
 
-  const asksExplicitChannel =
-    text.includes("channel") ||
-    text.includes("kanal") ||
-    text.includes("was steht in") ||
-    text.includes("zeig mir") ||
-    text.includes("fass") ||
-    text.includes("zusammen") ||
-    text.includes("inhalt") ||
-    text.includes("steht im");
-
-  if (!asksExplicitChannel) return null;
-
-  for (const wantedName of ALLOWED_CHANNELS) {
-    const aliases = getAliasesForChannel(wantedName);
-
+  for (const [target, aliases] of Object.entries(CHANNEL_ALIASES)) {
     for (const alias of aliases) {
-      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "[- ]?");
-      const rx = new RegExp(`\\b${escaped}\\b`, "i");
+      const aliasRaw = String(alias).toLowerCase();
+      const aliasCompact = normalizeChannelName(alias);
 
-      if (rx.test(text)) {
-        return wantedName;
+      if (raw.includes(aliasRaw) || compact.includes(aliasCompact)) {
+        return target;
       }
     }
   }
@@ -241,125 +71,226 @@ function detectTargetChannel(userText) {
   return null;
 }
 
-function buildPrompt(channelContexts, userText, askerMention, greeting) {
-  let contextText = `Fragender Creator: ${askerMention}
-Begrüßung: ${greeting}
+function buildExactChannelInstruction(targetChannel) {
+  if (!targetChannel) return "";
 
-Frage:
-${userText}
-
-Server-Kontexte:
-`;
-
-  if (channelContexts.length === 0) {
-    contextText += "Keine Channel-Kontexte gefunden.\n";
-  } else {
-    for (const c of channelContexts) {
-      contextText += `
-[CHANNEL]
-Name: ${c.channelName}
-Mention: ${c.mention}
-`;
-      if (c.latestCreatorMention) {
-        contextText += `Letzter Creator in diesem Channel: ${c.latestCreatorMention}\n`;
-      }
-      contextText += c.text?.trim()
-        ? `Text:\n${c.text}\n`
-        : `Text:\n- Keine Textnachrichten gefunden.\n`;
-    }
-  }
-
-  contextText += `
-WICHTIGE REGELN FÜR DEINE ANTWORT:
-- Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
-- Verwende niemals "User" oder "Nutzer", sondern allgemein immer "Creator".
-- Wenn du über eine konkrete Person sprichst, nutze die echte Mention, wenn vorhanden.
-- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention.
-- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Channel-Mention.
-- Wenn nach einem konkreten Channel gefragt wird, antworte NUR anhand dieses Channel-Kontexts.
-- Wenn nach "regelwerk" gefragt wird, fasse die wichtigsten Regeln zusammen und erwähne ergänzende Hinweise, falls sie im Kontext stehen.
-- Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
-- Antworte locker, klar, hilfreich und nicht unnötig lang.
-- Keine erfundenen Namen oder Beispiele.
-- Wenn etwas im Kontext nicht sicher steht, sag das ehrlich.
-`;
-
-  return contextText;
+  return [
+    "",
+    "EXAKTE CHANNEL-FRAGE:",
+    `Der User meint genau den Discord-Channel "${targetChannel}".`,
+    "WICHTIGE REGELN:",
+    `- Beantworte nur den Channel "${targetChannel}".`,
+    "- Weiche niemals auf ähnliche Channels aus.",
+    "- Rate nicht, ob vielleicht ein anderer Channel gemeint sein könnte.",
+    "- Stelle keine Rückfrage wie 'Meinst du vielleicht einen anderen Channel?'.",
+    `- Wenn "${targetChannel}" gemeint ist, dann ist exakt dieser Channel gemeint.`,
+    `- Wenn zu "${targetChannel}" kein Kontext gefunden wird, sag klar, dass genau für diesen Channel kein Kontext gefunden wurde.`,
+    "- Keine Alternativen, keine Vermutungen, keine Umdeutung."
+  ].join("\n");
 }
 
-client.on("messageCreate", async (message) => {
+function startTyping(channel) {
+  let stopped = false;
+  const tick = () => {
+    if (stopped) return;
+    channel.sendTyping().catch(() => {});
+  };
+  tick();
+  const iv = setInterval(tick, 7000);
+  return () => {
+    stopped = true;
+    clearInterval(iv);
+  };
+}
+
+async function fetchRecent(channel, limit = 20, includeBots = true) {
   try {
-    if (message.author.bot) return;
-    if (!message.guild) return;
+    const msgs = await channel.messages.fetch({
+      limit: Math.min(50, Math.max(1, limit))
+    });
 
-    const raw = message.content?.trim();
-    if (!raw) return;
+    const arr = [...msgs.values()].reverse();
 
-    const lower = raw.toLowerCase();
-    const isMention = message.mentions.has(client.user);
-    const isPrefix = lower.startsWith(PREFIX);
+    return arr
+      .filter((m) => includeBots || !m.author.bot)
+      .map((m) => ({
+        author: m.author.username,
+        authorid: m.author.id,
+        isbot: m.author.bot,
+        content: m.content || "",
+        createdat: m.createdAt.toISOString(),
+        images: [...m.attachments.values()]
+          .filter(
+            (a) =>
+              a.contentType?.startsWith("image/") ||
+              /\.(png|jpe?g|webp|gif)$/i.test(a.url)
+          )
+          .map((a) => a.url)
+      }));
+  } catch (e) {
+    console.warn("fetchRecent err", e?.message);
+    return [];
+  }
+}
 
-    if (!isMention && !isPrefix) return;
+async function findChannelsByHints(guild, hints) {
+  if (!guild) return [];
 
-    let userText = raw;
+  const all = [...guild.channels.cache.values()].filter((c) => c.isTextBased?.());
 
-    if (isMention) {
-      userText = userText.replace(/<@!?\d+>/g, "").trim();
-    } else if (isPrefix) {
-      userText = raw.slice(PREFIX.length).trim();
-    }
+  if (!hints || !hints.length || hints.includes("*")) return all;
 
-    if (!userText) {
-      await message.reply("Schreib mir einfach mit ?aura plus deiner Frage oder markiere mich direkt.");
+  const lower = hints.map((h) => String(h).toLowerCase());
+
+  return all.filter((c) =>
+    lower.some((h) => c.name?.toLowerCase().includes(h))
+  );
+}
+
+async function callEdgeAi(payload) {
+  const r = await fetch(EDGEAI, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${SUPABASEANONKEY}`,
+      apikey: SUPABASEANONKEY,
+      ...(BOTSHAREDSECRET ? { "x-bot-secret": BOTSHAREDSECRET } : {})
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`edge-ai http ${r.status} ${t.slice(0, 300)}`);
+  }
+
+  return r.json();
+}
+
+async function processQuestion(message, cleanQuestion) {
+  let stopTyping;
+
+  try {
+    const channel = message.channel;
+    const guild = message.guild;
+
+    if (!isAllowed(channel.id, channel.name)) {
+      await message.reply("Hier antworte ich gerade nicht. Schreib mich gern in einem anderen Channel an.");
       return;
     }
 
-    await message.channel.sendTyping();
+    stopTyping = startTyping(channel);
 
-    const greeting = pickGreeting();
-    const askerMention = `<@${message.author.id}>`;
-    const allContexts = await getChannelContext(message.guild);
-    const targetChannel = detectTargetChannel(userText);
+    const recentMessages = await fetchRecent(
+      channel,
+      SETTINGS.historydepth || 20,
+      true
+    );
 
-    let usedContexts = allContexts;
-    if (targetChannel) {
-      const filtered = allContexts.filter((c) => c.key === targetChannel);
-      if (filtered.length > 0) {
-        usedContexts = filtered;
+    const directImages = [];
+    for (const a of message.attachments.values()) {
+      if (
+        a.contentType?.startsWith("image/") ||
+        /\.(png|jpe?g|webp|gif)$/i.test(a.url)
+      ) {
+        directImages.push(a.url);
       }
     }
 
-    const prompt = buildPrompt(usedContexts, userText, askerMention, greeting);
+    const targetChannel = detectTargetChannel(cleanQuestion);
+    const exactChannelInstruction = buildExactChannelInstruction(targetChannel);
 
-    const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: prompt,
-    });
+    const finalQuestion = exactChannelInstruction
+      ? `${cleanQuestion}\n${exactChannelInstruction}`
+      : cleanQuestion;
 
-    const answer = String(response.output_text || "").trim();
+    let payload = {
+      question: finalQuestion || "leere Frage",
+      userId: message.author.id,
+      username: message.author.username,
+      channelName: channel.name,
+      channelId: channel.id,
+      recentMessages,
+      images: directImages.slice(0, SETTINGS.maximages || 8)
+    };
 
-    if (!answer) {
-      console.error("Leere OpenAI-Antwort:", JSON.stringify(response, null, 2));
-      await message.reply("Ich konnte gerade nichts Sinnvolles antworten.");
+    let resp = await callEdgeAi(payload);
+
+    let safetyRounds = 0;
+    while (resp?.status === "needstoolresult" && resp?.tool === "searchserver") {
+      safetyRounds++;
+      if (safetyRounds > 3) break;
+
+      const toolResults = [];
+
+      for (const call of resp.calls || []) {
+        let callHints = Array.isArray(call.channelhints) ? [...call.channelhints] : [];
+        const limit = Math.min(20, Math.max(1, call.messagelimit || 10));
+
+        if (targetChannel) {
+          const aliases = CHANNEL_ALIASES[targetChannel] || [targetChannel];
+          callHints = [...new Set([...callHints, ...aliases])];
+        }
+
+        const matched = await findChannelsByHints(guild, callHints);
+        const channels = [];
+
+        for (const ch of matched) {
+          if (!isAllowed(ch.id, ch.name)) continue;
+
+          if (targetChannel) {
+            const aliases = CHANNEL_ALIASES[targetChannel] || [targetChannel];
+            const chNorm = normalizeChannelName(ch.name);
+            const isExactTarget = aliases.some(
+              (alias) => normalizeChannelName(alias) === chNorm
+            );
+            if (!isExactTarget) continue;
+          }
+
+          const msgs = await fetchRecent(ch, limit, true);
+
+          channels.push({
+            name: ch.name,
+            id: ch.id,
+            messages: msgs
+          });
+        }
+
+        toolResults.push({
+          toolcallid: call.id,
+          channels
+        });
+      }
+
+      payload = {
+        question: finalQuestion,
+        userId: message.author.id,
+        conversationState: resp.conversationState,
+        toolResults
+      };
+
+      resp = await callEdgeAi(payload);
+    }
+
+    if (resp?.status === "needstoolresult") {
+      await message.reply("Hmm, die Server-Suche hat zu lange gedauert. Versuchs bitte nochmal oder formulier die Frage anders.");
       return;
     }
 
-    const parts = splitMessage(answer, 1900);
+    const answer =
+      resp?.answer ||
+      (targetChannel
+        ? `Ich konnte für den Channel ${targetChannel} gerade keinen passenden Kontext finden.`
+        : "Hmm, ich konnte gerade keine Antwort generieren. Versuchs bitte nochmal.");
 
-    for (const part of parts) {
-      await message.reply({
-        content: part,
-        allowedMentions: { parse: ["users", "roles"] },
-      });
-    }
-  } catch (error) {
-    console.error("Fehler im messageCreate-Handler:", error);
+    const safe = answer.length > 1990 ? `${answer.slice(0, 1987)}...` : answer;
+    await message.reply(safe);
+  } catch (err) {
+    console.error("Fehler bei Nachricht:", err);
     try {
-      await message.reply(
-        `Es gab gerade einen Fehler. Versuch es gleich nochmal.\nFehler: ${error.message?.slice(0, 300) || "unbekannt"}`
-      );
+      await message.reply("Ups, da ist was schiefgelaufen. Probiers gleich nochmal.");
     } catch {}
+  } finally {
+    stopTyping?.();
   }
-});
-
-client.login(DISCORD_TOKEN);
+}
