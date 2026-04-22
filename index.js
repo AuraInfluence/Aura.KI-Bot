@@ -44,6 +44,19 @@ const CHANNEL_ALIASES = {
   "agentur-info": ["agentur-info", "agentur info", "agenturinfo"],
 };
 
+const CHANNEL_LABELS = {
+  "regelwerk": "Regelwerk",
+  "neu-dazugekommen": "Neu-dazugekommen",
+  "richtlinien-faq": "Richtlinien-FAQ",
+  "agentur-faq": "Agentur-FAQ",
+  "updates": "Updates",
+  "information": "Informationen",
+  "umfragen": "Umfragen",
+  "tipps-und-tricks": "Tipps & Tricks",
+  "live-manager": "Live-Manager",
+  "agentur-info": "Agenturinfo",
+};
+
 const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
 
 if (!DISCORD_TOKEN) {
@@ -176,33 +189,6 @@ function detectTargetChannel(userText) {
   return null;
 }
 
-function buildChannelLabel(key) {
-  switch (key) {
-    case "regelwerk":
-      return "Regelwerk";
-    case "neu-dazugekommen":
-      return "Neu-dazugekommen";
-    case "richtlinien-faq":
-      return "Richtlinien-FAQ";
-    case "agentur-faq":
-      return "Agentur-FAQ";
-    case "updates":
-      return "Updates";
-    case "information":
-      return "Information";
-    case "umfragen":
-      return "Umfragen";
-    case "tipps-und-tricks":
-      return "Tipps-und-Tricks";
-    case "live-manager":
-      return "Live-Manager";
-    case "agentur-info":
-      return "Agentur-Info";
-    default:
-      return key;
-  }
-}
-
 async function getChannelContext(guild, targetChannel = null) {
   const contexts = [];
 
@@ -273,7 +259,7 @@ async function getChannelContext(guild, targetChannel = null) {
 
       contexts.push({
         key: wantedName,
-        channelLabel: buildChannelLabel(wantedName),
+        label: CHANNEL_LABELS[wantedName] || wantedName,
         channelName: channel.name,
         channelId: channel.id,
         mention: `<#${channel.id}>`,
@@ -289,6 +275,103 @@ async function getChannelContext(guild, targetChannel = null) {
   return contexts;
 }
 
+function isChannelQuestion(userText) {
+  const t = normalizeName(userText);
+  return (
+    t.includes("was-steht") ||
+    t.includes("was-ist") ||
+    t.includes("erklar") ||
+    t.includes("erklaer") ||
+    t.includes("wofur-ist") ||
+    t.includes("wofuer-ist")
+  );
+}
+
+async function buildNiceChannelAnswer({
+  askerMention,
+  userText,
+  targetContext,
+}) {
+  const label = targetContext.label;
+  const mention = targetContext.mention;
+
+  const prompt = `
+Du schreibst eine schöne Discord-Antwort auf Deutsch.
+
+Aufgabe:
+Der User fragt nach genau einem Server-Channel. Erkläre den Channel kurz, natürlich und hilfreich.
+
+Wichtige Regeln:
+- Antworte in 3 bis 5 Sätzen.
+- Klang natürlich, freundlich und hochwertig.
+- Nicht zu kurz, nicht zu lang.
+- Nenne den Channel IMMER mit dieser echten Mention: ${mention}
+- Verwende keine andere Channel-Schreibweise als diese Mention.
+- Schreibe NICHT "#unbekannt".
+- Schreibe NICHT doppelte Formulierungen wie "Information, Information".
+- Schreibe NICHT komische Füllsätze wie "die letzten Informationen darüber".
+- Wenn Inhalt aus dem Channel-Kontext kommt, fasse ihn sauber zusammen.
+- Wenn wenig Inhalt da ist, erkläre stattdessen sinnvoll, wofür der Channel da ist.
+- Starte mit ${askerMention}
+- Kein "User", sondern "Creator".
+- Am Ende gern ein kurzer natürlicher Zusatz wie:
+  "Wenn du zu einem Punkt daraus mehr wissen willst, sag einfach Bescheid."
+- Aber nur wenn es natürlich passt.
+
+Frage vom Creator:
+${userText}
+
+Channel-Name intern:
+${targetContext.key}
+
+Channel-Label:
+${label}
+
+Channel-Kontext:
+${targetContext.text || "Keine Textnachrichten gefunden."}
+`;
+
+  const inputContent = [
+    {
+      type: "input_text",
+      text: prompt,
+    },
+  ];
+
+  for (const imageUrl of targetContext.images || []) {
+    inputContent.push({
+      type: "input_image",
+      image_url: imageUrl,
+    });
+  }
+
+  const response = await openai.responses.create({
+    model: "gpt-4.1-mini",
+    instructions:
+      "Du bist Aura.KI von Aura Influence. Du formulierst schön, natürlich, klar und community-nah. Bei Channel-Erklärungen schreibst du nicht zu knapp, sondern angenehm und hilfreich.",
+    input: [
+      {
+        role: "user",
+        content: inputContent,
+      },
+    ],
+  });
+
+  let answer = cleanTailMentions(
+    response.output_text?.trim() || `${askerMention} In ${mention} findest du die wichtigsten Infos zu diesem Bereich.`
+  );
+
+  if (!answer.includes(mention)) {
+    answer = `${askerMention} In ${mention} findest du die wichtigsten Infos zu ${label}.`;
+  }
+
+  if (/#unbekannt/i.test(answer)) {
+    answer = answer.replace(/#unbekannt/gi, mention);
+  }
+
+  return answer;
+}
+
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
@@ -302,7 +385,7 @@ client.on("messageCreate", async (message) => {
 
     if (!isPrefix) return;
 
-    let userText = raw.slice(PREFIX.length).trim();
+    const userText = raw.slice(PREFIX.length).trim();
 
     if (!userText) {
       await message.reply("Schreib mir einfach mit ?aura plus deiner Frage.");
@@ -311,10 +394,38 @@ client.on("messageCreate", async (message) => {
 
     await message.channel.sendTyping();
 
-    const greeting = pickGreeting();
     const askerMention = `<@${message.author.id}>`;
     const detectedTargetChannel = detectTargetChannel(userText);
-    const channelContexts = await getChannelContext(message.guild, detectedTargetChannel);
+
+    if (detectedTargetChannel && isChannelQuestion(userText)) {
+      const channelContexts = await getChannelContext(message.guild, detectedTargetChannel);
+      const targetContext = channelContexts.find((x) => x.key === detectedTargetChannel);
+
+      if (!targetContext) {
+        await message.reply(
+          `${askerMention} Ich konnte den passenden Channel dazu gerade nicht sauber finden. Schau bitte kurz, ob der Kanalname genau so existiert oder schreib mir den Namen nochmal exakt.`
+        );
+        return;
+      }
+
+      const answer = await buildNiceChannelAnswer({
+        askerMention,
+        userText,
+        targetContext,
+      });
+
+      const parts = splitMessage(answer, 1900);
+      for (const part of parts) {
+        await message.reply({
+          content: part,
+          allowedMentions: { parse: ["users", "roles"] },
+        });
+      }
+      return;
+    }
+
+    const greeting = pickGreeting();
+    const channelContexts = await getChannelContext(message.guild);
 
     const inputContent = [];
     let contextText = `Fragender Creator: ${askerMention}
@@ -322,9 +433,6 @@ Begrüßung: ${greeting}
 
 Frage:
 ${userText}
-
-Erkanntes Kanal-Ziel:
-${detectedTargetChannel || "kein eindeutiger Zielkanal"}
 
 Server-Kontexte:
 `;
@@ -336,8 +444,8 @@ Server-Kontexte:
         contextText += `
 [CHANNEL]
 Interner Schlüssel: ${c.key}
-Anzeigename: ${c.channelLabel}
-Discord-Name: ${c.channelName}
+Label: ${c.label}
+Name: ${c.channelName}
 Mention: ${c.mention}
 `;
         if (c.latestCreatorMention) {
@@ -355,30 +463,12 @@ Mention: ${c.mention}
 
     contextText += `
 WICHTIGE REGELN FÜR DEINE ANTWORT:
-- Starte kurz natürlich, aber ohne unnötiges Gelaber.
 - Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
 - Verwende niemals "User" oder "Nutzer", sondern immer "Creator".
-- Wenn die Frage sich klar auf genau einen Channel bezieht, dann antworte NUR zu diesem einen Channel.
-- Wenn nach "information", "informationen", "info" oder "infos" gefragt wird, ist immer derselbe Channel gemeint.
-- Wenn nach "agenturinfo", "agentur-info" oder "agentur info" gefragt wird, ist immer derselbe Channel gemeint.
-- Wenn nach einem Channel gefragt wird, erkläre kurz und konkret, was in diesem Channel steht oder wofür er da ist.
-- Nutze bei einer Channel-Nennung IMMER die echte Channel-Mention aus dem Feld "Mention".
-- Schreibe NICHT sowas wie "im Channel Information, Information" oder doppelte Kanalnamen.
-- Schreibe NICHT "die letzten Informationen darüber" oder ähnliche komische Füllsätze.
-- Formuliere sauber so: "<#123456> ist dafür da, dass ..." oder "In <#123456> findest du ...".
-- Wenn nach Regelwerk gefragt wird, erkläre nur das Regelwerk.
-- Wenn nach Richtlinien gefragt wird, erkläre nur Richtlinien-FAQ.
-- Wenn nach Agentur-FAQ gefragt wird, erkläre nur Agentur-FAQ.
-- Wenn nach Updates gefragt wird, erkläre nur Updates.
-- Wenn nach Information gefragt wird, erkläre nur Information.
-- Wenn nach Umfragen gefragt wird, erkläre nur Umfragen.
-- Wenn nach Tipps und Tricks gefragt wird, erkläre nur Tipps-und-Tricks.
-- Wenn nach Live-Manager gefragt wird, erkläre nur Live-Manager.
-- Wenn nach Agentur-Info gefragt wird, erkläre nur Agentur-Info.
-- Wenn nach Neu-dazugekommen gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
-- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus den FAQ-Grafiken zusammenfasst.
-- Kurz, klar, hilfreich. Keine erfundenen Namen, keine erfundenen Inhalte.
-- Wenn ein passender Channel erkannt wurde, nenne in der Antwort genau dessen Mention mindestens einmal.
+- Antworte locker, klar, hilfreich und natürlich.
+- Nicht unnötig kurz.
+- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
+- Keine erfundenen Namen, keine erfundenen Beispiele.
 `;
 
     inputContent.push({
@@ -398,7 +488,7 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI von Aura Influence. Du antwortest auf Deutsch, natürlich, community-nah und präzise. Bei Fragen zu Discord-Kanälen erklärst du den passenden Kanal kurz und sauber. Du nennst Kanäle nicht als Klartext, sondern mit der gegebenen Discord-Mention. Keine doppelten Kanalnamen, keine komischen Füllsätze.",
+        "Du bist Aura.KI von Aura Influence. Du antwortest auf Deutsch, natürlich, community-nah, präzise und hilfreich. Du sollst nicht zu knapp antworten, wenn eine etwas schönere Antwort besser passt.",
       input: [
         {
           role: "user",
@@ -411,17 +501,7 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
       response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten."
     );
 
-    const targetContext = detectedTargetChannel
-      ? channelContexts.find((x) => x.key === detectedTargetChannel)
-      : null;
-
-    if (targetContext?.mention && !answer.includes(targetContext.mention)) {
-      answer = `${askerMention} ${targetContext.mention} ${answer}`;
-      answer = cleanTailMentions(answer);
-    }
-
     const parts = splitMessage(answer, 1900);
-
     for (const part of parts) {
       await message.reply({
         content: part,
