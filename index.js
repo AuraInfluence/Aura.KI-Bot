@@ -13,11 +13,20 @@ const ALLOWED_CHANNELS = [
 ];
 
 const CHANNEL_RULES = {
-  "regelwerk": { includeBots: true, preferImages: false, limit: 15 },
-  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 15 },
-  "richtlinien-faq": { includeBots: true, preferImages: true, limit: 10 },
-  "agentur-faq": { includeBots: true, preferImages: true, limit: 10 },
+  "regelwerk": { includeBots: true, preferImages: false, limit: 20 },
+  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 20 },
+  "richtlinien-faq": { includeBots: true, preferImages: true, limit: 12 },
+  "agentur-faq": { includeBots: true, preferImages: true, limit: 12 },
 };
+
+const GREETINGS = [
+  "Hey",
+  "Moin",
+  "Servus",
+  "Was geht",
+  "Hi",
+  "Jo",
+];
 
 if (!DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN fehlt.");
@@ -63,6 +72,10 @@ function normalizeName(text) {
     .trim();
 }
 
+function pickGreeting() {
+  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+}
+
 function extractImageUrls(message) {
   const urls = [];
 
@@ -79,6 +92,11 @@ function extractImageUrls(message) {
   }
 
   return [...new Set(urls)];
+}
+
+function extractMentionedUserIds(text) {
+  const matches = String(text || "").match(/<@!?(\d+)>/g) || [];
+  return matches.map((m) => m.replace(/\D/g, ""));
 }
 
 async function getChannelContext(guild) {
@@ -110,10 +128,7 @@ async function getChannelContext(guild) {
         return normalizeName(c.name) === normalizeName(wantedName);
       });
 
-      if (!channel) {
-        console.log(`Channel nicht gefunden: ${wantedName}`);
-        continue;
-      }
+      if (!channel) continue;
 
       const perms = channel.permissionsFor(me);
       if (!perms?.has(PermissionsBitField.Flags.ViewChannel)) continue;
@@ -126,11 +141,11 @@ async function getChannelContext(guild) {
       };
 
       const messages = await channel.messages.fetch({ limit: rule.limit });
-
       const sorted = [...messages.values()].reverse();
 
       const textLines = [];
       const imageUrls = [];
+      let latestCreatorMention = null;
 
       for (const m of sorted) {
         const hasText = !!m.content?.trim();
@@ -143,6 +158,11 @@ async function getChannelContext(guild) {
         if (hasText) {
           const authorLabel = m.author.bot ? `${m.author.username} [BOT]` : m.author.username;
           textLines.push(`- ${authorLabel}: ${m.content.trim()}`);
+
+          const ids = extractMentionedUserIds(m.content);
+          if (wantedName === "neu-dazugekommen" && ids.length > 0) {
+            latestCreatorMention = `<@${ids[ids.length - 1]}>`;
+          }
         }
 
         if (hasImages) {
@@ -152,8 +172,11 @@ async function getChannelContext(guild) {
 
       contexts.push({
         channelName: channel.name,
-        text: textLines.slice(0, 20).join("\n"),
-        images: [...new Set(imageUrls)].slice(0, 5),
+        channelId: channel.id,
+        mention: `<#${channel.id}>`,
+        text: textLines.slice(0, 30).join("\n"),
+        images: [...new Set(imageUrls)].slice(0, 6),
+        latestCreatorMention,
       });
     } catch (err) {
       console.error(`Fehler beim Lesen eines Channels (${wantedName}):`, err);
@@ -192,33 +215,54 @@ client.on("messageCreate", async (message) => {
 
     await message.channel.sendTyping();
 
+    const greeting = pickGreeting();
     const channelContexts = await getChannelContext(message.guild);
 
     const inputContent = [];
+    let contextText = `Begrüßung für diese Antwort: ${greeting}
 
-    let contextText = `User-Frage:\n${userText}\n\nVerfügbare Server-Kontexte:\n`;
+User-Frage:
+${userText}
+
+Server-Kontexte:
+`;
 
     if (channelContexts.length === 0) {
-      contextText += "Keine Channel-Kontexte gefunden.";
+      contextText += "Keine Channel-Kontexte gefunden.\n";
     } else {
       for (const c of channelContexts) {
-        contextText += `\n[CHANNEL: ${c.channelName}]\n`;
+        contextText += `
+[CHANNEL]
+Name: ${c.channelName}
+Mention: ${c.mention}
+`;
+        if (c.latestCreatorMention) {
+          contextText += `Letzter erwähnter Creator in diesem Channel: ${c.latestCreatorMention}\n`;
+        }
         contextText += c.text?.trim()
-          ? `${c.text}\n`
-          : "- Keine Textnachrichten gefunden.\n";
+          ? `Textinhalte:\n${c.text}\n`
+          : `Textinhalte:\n- Keine Textnachrichten gefunden.\n`;
 
         if (c.images?.length) {
-          contextText += `- Dieser Channel enthält außerdem Bilder/Infografiken, die zusätzlich analysiert werden.\n`;
+          contextText += `Hinweis: Dieser Channel enthält Bilder/Infografiken, die zusätzlich analysiert werden.\n`;
         }
       }
     }
 
-    contextText += `\nWICHTIG:
-- Wenn du Informationen aus einem Channel nutzt, nenne den Channel-Namen in der Antwort.
-- Wenn etwas aus Bildern kommt, sage das ehrlich.
-- Wenn in regelwerk die ProBot-Nachricht relevant ist, nutze sie.
-- Wenn in neu-dazugekommen ProBot-Willkommensposts sind, behandle das als echte Server-Infos.
-- Erfinde nichts.`;
+    contextText += `
+WICHTIGE ANTWORTREGELN:
+- Du bist Aura.KI von Aura Influence.
+- Nenne Mitglieder niemals User oder Nutzer, sondern immer Creator.
+- Wenn nach Regeln gefragt wird, fasse die wichtigsten Regeln klar und kurz zusammen, statt nur die Quelle zu nennen.
+- Wenn nach regelwerk gefragt wird, nenne den Channel mit echter Mention, also das Feld "Mention".
+- Wenn nach richtlinien-faq oder agentur-faq gefragt wird, nenne den passenden Channel ebenfalls mit echter Mention.
+- Wenn nach neu-dazugekommen gefragt wird und ein letzter Creator erkannt wurde, erwähne diesen Creator sinnvoll.
+- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus den FAQ-Grafiken im jeweiligen Channel zusammenfasst.
+- Antworte locker, klar, direkt und hilfreich.
+- Verwende am Anfang natürlich eine kurze Begrüßung passend zur vorgegebenen Begrüßung.
+- Nicht unnötig lang.
+- Erfinde nichts.
+`;
 
     inputContent.push({
       type: "input_text",
@@ -237,7 +281,7 @@ client.on("messageCreate", async (message) => {
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte immer auf Deutsch, klar, hilfreich und direkt. Nutze Server-Kontext nur wenn passend. Antworte präzise. Wenn die Frage nach Regeln, FAQ oder neuen Mitgliedern fragt, beziehe die passenden Channels ein und nenne sie klar.",
+        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Du sprichst deutsch. Du sprichst Mitglieder immer als Creator an. Du antwortest natürlich, modern und community-nah.",
       input: [
         {
           role: "user",
@@ -252,6 +296,7 @@ client.on("messageCreate", async (message) => {
 
     await message.reply({
       content: answer.slice(0, 1900),
+      allowedMentions: { parse: ["users", "roles"] },
     });
   } catch (error) {
     console.error("Fehler im messageCreate-Handler:", error);
