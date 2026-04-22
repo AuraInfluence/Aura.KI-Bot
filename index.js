@@ -1,9 +1,16 @@
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, ChannelType, PermissionsBitField } from "discord.js";
 import OpenAI from "openai";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PREFIX = "?aura";
+
+const ALLOWED_CHANNELS = [
+  "regelwerk-neu",
+  "neu-dazugekommen",
+  "richtlinien-faq",
+  "agentur-faq",
+];
 
 if (!DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN fehlt.");
@@ -30,6 +37,55 @@ const client = new Client({
 client.once("ready", () => {
   console.log(`✅ Bot ist online als ${client.user.tag}`);
 });
+
+function normalizeName(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9äöüß-_ ]/g, "")
+    .replace(/\s+/g, "-")
+    .trim();
+}
+
+async function getChannelContext(guild) {
+  const contexts = [];
+
+  for (const wantedName of ALLOWED_CHANNELS) {
+    const channel = guild.channels.cache.find((c) => {
+      if (!c) return false;
+      if (c.type !== ChannelType.GuildText) return false;
+      return normalizeName(c.name) === normalizeName(wantedName);
+    });
+
+    if (!channel) continue;
+
+    const me = guild.members.me;
+    if (!me) continue;
+
+    const perms = channel.permissionsFor(me);
+    if (!perms?.has(PermissionsBitField.Flags.ViewChannel)) continue;
+    if (!perms?.has(PermissionsBitField.Flags.ReadMessageHistory)) continue;
+
+    try {
+      const messages = await channel.messages.fetch({ limit: 8 });
+      const cleaned = [...messages.values()]
+        .reverse()
+        .filter((m) => !m.author.bot && m.content?.trim())
+        .map((m) => `- ${m.author.username}: ${m.content.trim()}`)
+        .slice(0, 8);
+
+      contexts.push({
+        channelName: channel.name,
+        text: cleaned.join("\n"),
+      });
+    } catch (err) {
+      console.error(`Fehler beim Lesen von #${channel.name}:`, err.message);
+    }
+  }
+
+  return contexts;
+}
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -60,11 +116,28 @@ client.on("messageCreate", async (message) => {
   try {
     await message.channel.sendTyping();
 
+    const channelContexts = await getChannelContext(message.guild);
+
+    const contextBlock =
+      channelContexts.length > 0
+        ? channelContexts
+            .map(
+              (c) =>
+                `# ${c.channelName}\n${c.text || "- Keine lesbaren Nachrichten gefunden."}`
+            )
+            .join("\n\n")
+        : "Keine Channel-Kontexte gefunden.";
+
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte immer auf Deutsch, locker, klar, hilfreich und direkt. Sei sympathisch, modern und nicht unnötig lang.",
-      input: userText,
+        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte immer auf Deutsch, locker, klar, hilfreich und direkt. Nutze den Server-Kontext nur dann, wenn er zur Frage passt. Erfinde nichts.",
+      input: [
+        {
+          role: "user",
+          content: `User-Frage:\n${userText}\n\nServer-Kontext aus ausgewählten Channels:\n${contextBlock}`,
+        },
+      ],
     });
 
     const answer =
