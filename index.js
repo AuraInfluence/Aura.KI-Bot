@@ -31,6 +31,26 @@ const CHANNEL_RULES = {
   "agentur-info": { includeBots: true, limit: 20 },
 };
 
+const CHANNEL_ALIASES = {
+  "regelwerk": ["regelwerk"],
+  "neu-dazugekommen": ["neu-dazugekommen", "neu dazugekommen", "neudazugekommen"],
+  "richtlinien-faq": ["richtlinien-faq", "richtlinien faq", "richtlinienfaq"],
+  "agentur-faq": ["agentur-faq", "agentur faq", "agenturfaq"],
+  "updates": ["updates", "update"],
+  "information": ["information", "informationen", "info", "infos"],
+  "umfragen": ["umfragen", "umfrage"],
+  "tipps-und-tricks": [
+    "tipps-und-tricks",
+    "tipps und tricks",
+    "tipps-und-trick",
+    "tipps tricks",
+    "tipps",
+    "tricks",
+  ],
+  "live-manager": ["live-manager", "live manager", "livemanager"],
+  "agentur-info": ["agentur-info", "agentur info", "agenturinfo"],
+};
+
 const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
 
 if (!DISCORD_TOKEN) {
@@ -74,6 +94,7 @@ function normalizeName(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
     .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
     .trim();
 }
 
@@ -103,6 +124,22 @@ function splitMessage(text, maxLength = 1900) {
   return chunks;
 }
 
+function getAliasesForChannel(wantedName) {
+  return CHANNEL_ALIASES[wantedName] || [wantedName];
+}
+
+function findMatchingChannel(guild, wantedName) {
+  const aliases = getAliasesForChannel(wantedName).map(normalizeName);
+
+  return guild.channels.cache.find((c) => {
+    if (!c) return false;
+    if (c.type !== ChannelType.GuildText) return false;
+
+    const channelName = normalizeName(c.name);
+    return aliases.includes(channelName);
+  });
+}
+
 async function getChannelContext(guild) {
   const contexts = [];
 
@@ -126,12 +163,7 @@ async function getChannelContext(guild) {
 
   for (const wantedName of ALLOWED_CHANNELS) {
     try {
-      const channel = guild.channels.cache.find((c) => {
-        if (!c) return false;
-        if (c.type !== ChannelType.GuildText) return false;
-        return normalizeName(c.name) === normalizeName(wantedName);
-      });
-
+      const channel = findMatchingChannel(guild, wantedName);
       if (!channel) continue;
 
       const perms = channel.permissionsFor(me);
@@ -164,6 +196,7 @@ async function getChannelContext(guild) {
       }
 
       contexts.push({
+        key: wantedName,
         channelName: channel.name,
         mention: `<#${channel.id}>`,
         text: textLines.slice(0, 40).join("\n"),
@@ -178,18 +211,32 @@ async function getChannelContext(guild) {
 }
 
 function detectTargetChannel(userText) {
-  const text = String(userText || "").toLowerCase();
+  const text = String(userText || "").toLowerCase().trim();
 
-  if (text.includes("regelwerk")) return "regelwerk";
-  if (text.includes("neu") && text.includes("dazugekommen")) return "neu-dazugekommen";
-  if (text.includes("richtlinien")) return "richtlinien-faq";
-  if (text.includes("agentur faq") || text.includes("agentur-faq")) return "agentur-faq";
-  if (text.includes("updates")) return "updates";
-  if (text.includes("information")) return "information";
-  if (text.includes("umfragen")) return "umfragen";
-  if (text.includes("tipps") || text.includes("tricks")) return "tipps-und-tricks";
-  if (text.includes("live manager") || text.includes("live-manager")) return "live-manager";
-  if (text.includes("agentur info") || text.includes("agentur-info")) return "agentur-info";
+  const asksExplicitChannel =
+    text.includes("channel") ||
+    text.includes("kanal") ||
+    text.includes("was steht in") ||
+    text.includes("zeig mir") ||
+    text.includes("fass") ||
+    text.includes("zusammen") ||
+    text.includes("inhalt") ||
+    text.includes("steht im");
+
+  if (!asksExplicitChannel) return null;
+
+  for (const wantedName of ALLOWED_CHANNELS) {
+    const aliases = getAliasesForChannel(wantedName);
+
+    for (const alias of aliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "[- ]?");
+      const rx = new RegExp(`\\b${escaped}\\b`, "i");
+
+      if (rx.test(text)) {
+        return wantedName;
+      }
+    }
+  }
 
   return null;
 }
@@ -228,7 +275,8 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
 - Verwende niemals "User" oder "Nutzer", sondern allgemein immer "Creator".
 - Wenn du über eine konkrete Person sprichst, nutze die echte Mention, wenn vorhanden.
 - Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention.
-- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Mention.
+- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Channel-Mention.
+- Wenn nach einem konkreten Channel gefragt wird, antworte NUR anhand dieses Channel-Kontexts.
 - Wenn nach "regelwerk" gefragt wird, fasse die wichtigsten Regeln zusammen und erwähne ergänzende Hinweise, falls sie im Kontext stehen.
 - Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
 - Antworte locker, klar, hilfreich und nicht unnötig lang.
@@ -275,10 +323,10 @@ client.on("messageCreate", async (message) => {
 
     let usedContexts = allContexts;
     if (targetChannel) {
-      const filtered = allContexts.filter(
-        (c) => normalizeName(c.channelName) === normalizeName(targetChannel)
-      );
-      if (filtered.length > 0) usedContexts = filtered;
+      const filtered = allContexts.filter((c) => c.key === targetChannel);
+      if (filtered.length > 0) {
+        usedContexts = filtered;
+      }
     }
 
     const prompt = buildPrompt(usedContexts, userText, askerMention, greeting);
