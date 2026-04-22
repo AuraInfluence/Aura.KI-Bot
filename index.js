@@ -3,6 +3,7 @@ import OpenAI from "openai";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const PREFIX = "?aura";
 
 if (!DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN fehlt.");
@@ -34,8 +35,27 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
-  const content = message.content.trim();
-  if (!content) return;
+  const raw = message.content?.trim();
+  if (!raw) return;
+
+  const lower = raw.toLowerCase();
+  const isMention = message.mentions.has(client.user);
+  const isPrefix = lower.startsWith(PREFIX);
+
+  if (!isMention && !isPrefix) return;
+
+  let userText = raw;
+
+  if (isMention) {
+    userText = userText.replace(/<@!?\d+>/g, "").trim();
+  } else if (isPrefix) {
+    userText = raw.slice(PREFIX.length).trim();
+  }
+
+  if (!userText) {
+    await message.reply("Schreib mir einfach mit ?aura plus deiner Frage oder markiere mich direkt.");
+    return;
+  }
 
   try {
     await message.channel.sendTyping();
@@ -43,11 +63,13 @@ client.on("messageCreate", async (message) => {
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte locker, klar, hilfreich und auf Deutsch. Antworte direkt auf die Frage des Users. Sei nicht unnötig lang.",
-      input: content,
+        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte immer auf Deutsch, locker, klar, hilfreich und direkt. Sei sympathisch, modern und nicht unnötig lang.",
+      input: userText,
     });
 
-    const answer = response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten.";
+    const answer =
+      response.output_text?.trim() ||
+      "Ich konnte gerade nichts Sinnvolles antworten.";
 
     await message.reply({
       content: answer.slice(0, 1900),
