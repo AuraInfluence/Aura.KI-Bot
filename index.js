@@ -12,6 +12,13 @@ const ALLOWED_CHANNELS = [
   "agentur-faq",
 ];
 
+const CHANNEL_RULES = {
+  "regelwerk": { includeBots: true, preferImages: false, limit: 15 },
+  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 15 },
+  "richtlinien-faq": { includeBots: true, preferImages: true, limit: 10 },
+  "agentur-faq": { includeBots: true, preferImages: true, limit: 10 },
+};
+
 if (!DISCORD_TOKEN) {
   console.error("DISCORD_TOKEN fehlt.");
   process.exit(1);
@@ -56,6 +63,24 @@ function normalizeName(text) {
     .trim();
 }
 
+function extractImageUrls(message) {
+  const urls = [];
+
+  for (const attachment of message.attachments.values()) {
+    const isImage =
+      attachment.contentType?.startsWith("image/") ||
+      /\.(png|jpe?g|webp|gif)$/i.test(attachment.url || "");
+    if (isImage && attachment.url) urls.push(attachment.url);
+  }
+
+  for (const embed of message.embeds) {
+    if (embed.image?.url) urls.push(embed.image.url);
+    if (embed.thumbnail?.url) urls.push(embed.thumbnail.url);
+  }
+
+  return [...new Set(urls)];
+}
+
 async function getChannelContext(guild) {
   const contexts = [];
 
@@ -66,7 +91,6 @@ async function getChannelContext(guild) {
   }
 
   let me = guild.members.me;
-
   try {
     if (!me && client.user?.id) {
       me = await guild.members.fetch(client.user.id);
@@ -76,10 +100,7 @@ async function getChannelContext(guild) {
     return contexts;
   }
 
-  if (!me) {
-    console.error("Bot-Mitglied in Guild nicht gefunden.");
-    return contexts;
-  }
+  if (!me) return contexts;
 
   for (const wantedName of ALLOWED_CHANNELS) {
     try {
@@ -95,32 +116,44 @@ async function getChannelContext(guild) {
       }
 
       const perms = channel.permissionsFor(me);
-      if (!perms) {
-        console.log(`Keine Permissions prüfbar für #${channel.name}`);
-        continue;
+      if (!perms?.has(PermissionsBitField.Flags.ViewChannel)) continue;
+      if (!perms?.has(PermissionsBitField.Flags.ReadMessageHistory)) continue;
+
+      const rule = CHANNEL_RULES[wantedName] || {
+        includeBots: false,
+        preferImages: false,
+        limit: 10,
+      };
+
+      const messages = await channel.messages.fetch({ limit: rule.limit });
+
+      const sorted = [...messages.values()].reverse();
+
+      const textLines = [];
+      const imageUrls = [];
+
+      for (const m of sorted) {
+        const hasText = !!m.content?.trim();
+        const images = extractImageUrls(m);
+        const hasImages = images.length > 0;
+
+        if (!rule.includeBots && m.author.bot) continue;
+        if (!hasText && !hasImages) continue;
+
+        if (hasText) {
+          const authorLabel = m.author.bot ? `${m.author.username} [BOT]` : m.author.username;
+          textLines.push(`- ${authorLabel}: ${m.content.trim()}`);
+        }
+
+        if (hasImages) {
+          imageUrls.push(...images);
+        }
       }
-
-      if (!perms.has(PermissionsBitField.Flags.ViewChannel)) {
-        console.log(`Kein Zugriff auf #${channel.name}`);
-        continue;
-      }
-
-      if (!perms.has(PermissionsBitField.Flags.ReadMessageHistory)) {
-        console.log(`Kein Nachrichtenverlauf-Zugriff auf #${channel.name}`);
-        continue;
-      }
-
-      const messages = await channel.messages.fetch({ limit: 8 });
-
-      const cleaned = [...messages.values()]
-        .reverse()
-        .filter((m) => !m.author.bot && m.content?.trim())
-        .map((m) => `- ${m.author.username}: ${m.content.trim()}`)
-        .slice(0, 8);
 
       contexts.push({
         channelName: channel.name,
-        text: cleaned.join("\n"),
+        text: textLines.slice(0, 20).join("\n"),
+        images: [...new Set(imageUrls)].slice(0, 5),
       });
     } catch (err) {
       console.error(`Fehler beim Lesen eines Channels (${wantedName}):`, err);
@@ -161,21 +194,56 @@ client.on("messageCreate", async (message) => {
 
     const channelContexts = await getChannelContext(message.guild);
 
-    const contextBlock =
-      channelContexts.length > 0
-        ? channelContexts
-            .map(
-              (c) =>
-                `# ${c.channelName}\n${c.text || "- Keine lesbaren Nachrichten gefunden."}`
-            )
-            .join("\n\n")
-        : "Keine Channel-Kontexte gefunden.";
+    const inputContent = [];
+
+    let contextText = `User-Frage:\n${userText}\n\nVerfügbare Server-Kontexte:\n`;
+
+    if (channelContexts.length === 0) {
+      contextText += "Keine Channel-Kontexte gefunden.";
+    } else {
+      for (const c of channelContexts) {
+        contextText += `\n[CHANNEL: ${c.channelName}]\n`;
+        contextText += c.text?.trim()
+          ? `${c.text}\n`
+          : "- Keine Textnachrichten gefunden.\n";
+
+        if (c.images?.length) {
+          contextText += `- Dieser Channel enthält außerdem Bilder/Infografiken, die zusätzlich analysiert werden.\n`;
+        }
+      }
+    }
+
+    contextText += `\nWICHTIG:
+- Wenn du Informationen aus einem Channel nutzt, nenne den Channel-Namen in der Antwort.
+- Wenn etwas aus Bildern kommt, sage das ehrlich.
+- Wenn in regelwerk die ProBot-Nachricht relevant ist, nutze sie.
+- Wenn in neu-dazugekommen ProBot-Willkommensposts sind, behandle das als echte Server-Infos.
+- Erfinde nichts.`;
+
+    inputContent.push({
+      type: "input_text",
+      text: contextText,
+    });
+
+    for (const c of channelContexts) {
+      for (const imageUrl of c.images || []) {
+        inputContent.push({
+          type: "input_image",
+          image_url: imageUrl,
+        });
+      }
+    }
 
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
       instructions:
-        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte immer auf Deutsch, locker, klar, hilfreich und direkt. Nutze den Server-Kontext nur dann, wenn er wirklich zur Frage passt. Erfinde nichts.",
-      input: `User-Frage:\n${userText}\n\nServer-Kontext aus ausgewählten Channels:\n${contextBlock}`,
+        "Du bist Aura.KI, der freundliche Discord-Assistent von Aura Influence. Antworte immer auf Deutsch, klar, hilfreich und direkt. Nutze Server-Kontext nur wenn passend. Antworte präzise. Wenn die Frage nach Regeln, FAQ oder neuen Mitgliedern fragt, beziehe die passenden Channels ein und nenne sie klar.",
+      input: [
+        {
+          role: "user",
+          content: inputContent,
+        },
+      ],
     });
 
     const answer =
