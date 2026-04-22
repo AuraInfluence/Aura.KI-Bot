@@ -6,7 +6,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PREFIX = "?aura";
 
 const ALLOWED_CHANNELS = [
-  "regelwerk-neu",
+  "regelwerk",
   "neu-dazugekommen",
   "richtlinien-faq",
   "agentur-faq",
