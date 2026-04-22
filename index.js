@@ -1,12 +1,3 @@
-// Aura.KI Discord Bot — index.js (Railway)
-// - Lädt Settings + Channel-Regeln live aus dem Lovable-Dashboard (alle 10s).
-// - Reagiert auf @mention ODER "!" + Trigger-Wort am Satzanfang (z.B. "!aura ...").
-// - Liest Channel-Kontext + Bilder, ruft Lovable Edge Function (discord-ai) auf.
-// - Versteht Tool-Calls (search_server) inkl. ['*'] = alle Channels.
-// - HARDCODED: 0s Cooldown.
-// - PER-USER QUEUE: Fragen vom gleichen User werden nacheinander beantwortet.
-// Andere User werden parallel bedient (kein Blocking zwischen Usern).
-
 import {
   Client,
   GatewayIntentBits,
@@ -14,29 +5,34 @@ import {
   Events,
   ActivityType,
 } from "discord.js";
+import OpenAI from "openai";
 
-// ---------- ENV ----------
-// Akzeptiert beide Namens-Varianten (DISCORD_TOKEN oder DISCORD_BOT_TOKEN)
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN || process.env.DISCORD_BOT_TOKEN;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY =
-  process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
-const BOT_SHARED_SECRET = process.env.BOT_SHARED_SECRET || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const NODE_ENV = process.env.NODE_ENV || "production";
 
-if (!DISCORD_TOKEN || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.error("Fehlende ENV: DISCORD_TOKEN, SUPABASE_URL, SUPABASE_ANON_KEY");
+if (!DISCORD_TOKEN || !OPENAI_API_KEY) {
+  console.error("Fehlende ENV: DISCORD_TOKEN oder OPENAI_API_KEY");
   console.error("Gefunden:", {
     DISCORD_TOKEN: !!DISCORD_TOKEN,
-    SUPABASE_URL: !!SUPABASE_URL,
-    SUPABASE_ANON_KEY: !!SUPABASE_ANON_KEY,
+    OPENAI_API_KEY: !!OPENAI_API_KEY,
+    NODE_ENV,
   });
   process.exit(1);
 }
 
-const EDGE_AI = `${SUPABASE_URL}/functions/v1/discord-ai`;
-const EDGE_CONFIG = `${SUPABASE_URL}/functions/v1/bot-config`;
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ---------- LIVE SETTINGS ----------
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+  ],
+  partials: [Partials.Channel, Partials.Message],
+});
+
 let SETTINGS = {
   bot_name: "Aura.KI",
   presence_status: "online",
@@ -50,53 +46,15 @@ let SETTINGS = {
 
 let CHANNEL_RULES = [];
 
-// Nur für die lokale Kanal-Suche des Bots.
-// Der wichtige Fix ist hier: "information" matcht auch "informationen", "info", "infos".
 const CHANNEL_HINT_ALIASES = {
   information: ["information", "informationen", "info", "infos"],
 };
 
-async function loadConfig() {
-  try {
-    const r = await fetch(EDGE_CONFIG, {
-      headers: {
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        apikey: SUPABASE_ANON_KEY,
-        ...(BOT_SHARED_SECRET ? { "x-bot-secret": BOT_SHARED_SECRET } : {}),
-      },
-    });
-
-    if (!r.ok) {
-      console.warn("bot-config http", r.status);
-      return;
-    }
-
-    const data = await r.json();
-    if (data?.settings) SETTINGS = { ...SETTINGS, ...data.settings };
-    if (Array.isArray(data?.channel_rules)) CHANNEL_RULES = data.channel_rules;
-  } catch (e) {
-    console.warn("loadConfig error", e?.message);
-  }
-}
-
-// ---------- DISCORD CLIENT ----------
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-  ],
-  partials: [Partials.Channel, Partials.Message],
-});
-
 client.once(Events.ClientReady, async (c) => {
   console.log(`Bot online als ${c.user.tag}`);
-  await loadConfig();
   applyPresence();
 
-  setInterval(async () => {
-    await loadConfig();
+  setInterval(() => {
     applyPresence();
   }, 10_000);
 });
@@ -117,7 +75,6 @@ function applyPresence() {
   }
 }
 
-// ---------- HELPERS ----------
 function isAllowed(channelId, channelName) {
   if (!CHANNEL_RULES.length) return true;
 
@@ -241,7 +198,6 @@ async function findChannelsByHints(guild, hints) {
   if (!guild) return [];
 
   const all = [...guild.channels.cache.values()].filter((c) => c.isTextBased?.());
-
   if (!hints || !hints.length || hints.includes("*")) return all;
 
   const lower = expandHints(hints);
@@ -252,27 +208,37 @@ async function findChannelsByHints(guild, hints) {
   });
 }
 
-async function callEdgeAi(payload) {
-  const r = await fetch(EDGE_AI, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      apikey: SUPABASE_ANON_KEY,
-      ...(BOT_SHARED_SECRET ? { "x-bot-secret": BOT_SHARED_SECRET } : {}),
-    },
-    body: JSON.stringify(payload),
+async function summarizeMessages(question, recentMessages, channelName) {
+  const contextLines = recentMessages.slice(-20).map((m) => {
+    const img = m.images?.length ? ` [${m.images.length} Bild(er)]` : "";
+    return `- ${m.author}: ${m.content || "(kein Text)"}${img}`;
   });
 
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`edge-ai http ${r.status}: ${t.slice(0, 300)}`);
-  }
+  const prompt = [
+    `Du bist ein hilfreicher Discord-Assistent.`,
+    `Antworte kurz, konkret und passend zur Frage.`,
+    `Wenn der User nach einem Channel fragt, nutze die Nachrichten im Channel-Kontext.`,
+    `Wenn die Frage nach dem Channel "Information" geht, beachte, dass auch "information", "informationen", "info" und "infos" derselbe Zielkanal sein können.`,
+    ``,
+    `Frage: ${question}`,
+    `Aktueller Channel: ${channelName}`,
+    ``,
+    `Letzte Nachrichten:`,
+    ...contextLines,
+  ].join("\n");
 
-  return r.json();
+  const result = await openai.chat.completions.create({
+    model: "gpt-5-mini",
+    messages: [
+      { role: "system", content: "Du bist ein präziser Discord-Assistent." },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0.4,
+  });
+
+  return result?.choices?.[0]?.message?.content?.trim() || "Hmm, dazu habe ich gerade keine passende Antwort.";
 }
 
-// 🟢 PER-USER QUEUE: ein User → seine Fragen nacheinander, andere User parallel
 const userQueues = new Map();
 
 function enqueueForUser(userId, task) {
@@ -290,7 +256,6 @@ function enqueueForUser(userId, task) {
   return next;
 }
 
-// ---------- KERNVERARBEITUNG ----------
 async function processQuestion(message, cleanQuestion) {
   let stopTyping = () => {};
 
@@ -299,19 +264,13 @@ async function processQuestion(message, cleanQuestion) {
     const guild = message.guild;
 
     if (!isAllowed(channel.id, channel.name)) {
-      await message.reply(
-        "Hier antworte ich gerade nicht. Schreib mich gern in einem anderen Channel an. 🙂"
-      );
+      await message.reply("Hier antworte ich gerade nicht. Schreib mich gern in einem anderen Channel an. 🙂");
       return;
     }
 
     stopTyping = startTyping(channel);
 
-    const recentMessages = await fetchRecent(
-      channel,
-      SETTINGS.history_depth || 20,
-      true
-    );
+    const recentMessages = await fetchRecent(channel, SETTINGS.history_depth || 20, true);
 
     const directImages = [];
     for (const a of message.attachments.values()) {
@@ -323,68 +282,7 @@ async function processQuestion(message, cleanQuestion) {
       }
     }
 
-    let payload = {
-      question: cleanQuestion || "(leere Frage)",
-      userId: message.author.id,
-      username: message.author.username,
-      channelName: channel.name,
-      channelId: channel.id,
-      recentMessages,
-      images: directImages.slice(0, SETTINGS.max_images || 8),
-    };
-
-    let resp = await callEdgeAi(payload);
-
-    let safetyRounds = 0;
-
-    while (resp?.status === "needs_tool_result" && resp?.tool === "search_server") {
-      safetyRounds++;
-      if (safetyRounds > 3) break;
-
-      const toolResults = [];
-
-      for (const call of resp.calls || []) {
-        const limit = Math.min(20, Math.max(1, call.message_limit || 10));
-        const matched = await findChannelsByHints(guild, call.channel_hints || []);
-        const channels = [];
-
-        for (const ch of matched) {
-          if (!isAllowed(ch.id, ch.name)) continue;
-
-          const msgs = await fetchRecent(ch, limit, true);
-          channels.push({
-            name: ch.name,
-            id: ch.id,
-            messages: msgs,
-          });
-        }
-
-        toolResults.push({
-          tool_call_id: call.id,
-          channels,
-        });
-      }
-
-      payload = {
-        question: "(continuation)",
-        userId: message.author.id,
-        conversationState: resp.conversationState,
-        toolResults,
-      };
-
-      resp = await callEdgeAi(payload);
-    }
-
-    if (resp?.status === "needs_tool_result") {
-      await message.reply(
-        "Hmm, die Server-Suche hat zu lange gedauert. Versuch's bitte nochmal oder formulier die Frage anders."
-      );
-      return;
-    }
-
-    const answer =
-      resp?.answer ||
-      "Hmm, ich konnte gerade keine Antwort generieren. Versuch's bitte nochmal.";
+    let answer = await summarizeMessages(cleanQuestion, recentMessages, channel.name);
 
     const safe = answer.length > 1990 ? answer.slice(0, 1987) + "..." : answer;
     await message.reply(safe);
@@ -398,7 +296,6 @@ async function processQuestion(message, cleanQuestion) {
   }
 }
 
-// ---------- MESSAGE HANDLER ----------
 client.on(Events.MessageCreate, async (message) => {
   const cleanQuestion = shouldRespond(message);
   if (cleanQuestion === false) return;
