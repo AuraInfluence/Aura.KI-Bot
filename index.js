@@ -19,16 +19,16 @@ const ALLOWED_CHANNELS = [
 ];
 
 const CHANNEL_RULES = {
-  "regelwerk": { includeBots: true, preferImages: false, limit: 30 },
-  "neu-dazugekommen": { includeBots: true, preferImages: false, limit: 25 },
-  "richtlinien-faq": { includeBots: true, preferImages: true, limit: 12 },
-  "agentur-faq": { includeBots: true, preferImages: true, limit: 12 },
-  "updates": { includeBots: true, preferImages: true, limit: 20 },
-  "information": { includeBots: true, preferImages: true, limit: 20 },
-  "umfragen": { includeBots: true, preferImages: true, limit: 20 },
-  "tipps-und-tricks": { includeBots: true, preferImages: true, limit: 20 },
-  "live-manager": { includeBots: true, preferImages: true, limit: 20 },
-  "agentur-info": { includeBots: true, preferImages: true, limit: 20 },
+  "regelwerk": { includeBots: true, limit: 30 },
+  "neu-dazugekommen": { includeBots: true, limit: 25 },
+  "richtlinien-faq": { includeBots: true, limit: 12 },
+  "agentur-faq": { includeBots: true, limit: 12 },
+  "updates": { includeBots: true, limit: 20 },
+  "information": { includeBots: true, limit: 20 },
+  "umfragen": { includeBots: true, limit: 20 },
+  "tipps-und-tricks": { includeBots: true, limit: 20 },
+  "live-manager": { includeBots: true, limit: 20 },
+  "agentur-info": { includeBots: true, limit: 20 },
 };
 
 const GREETINGS = ["Hey", "Moin", "Servus", "Was geht", "Hi", "Jo"];
@@ -81,24 +81,6 @@ function pickGreeting() {
   return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
 }
 
-function extractImageUrls(message) {
-  const urls = [];
-
-  for (const attachment of message.attachments.values()) {
-    const isImage =
-      attachment.contentType?.startsWith("image/") ||
-      /\.(png|jpe?g|webp|gif)$/i.test(attachment.url || "");
-    if (isImage && attachment.url) urls.push(attachment.url);
-  }
-
-  for (const embed of message.embeds) {
-    if (embed.image?.url) urls.push(embed.image.url);
-    if (embed.thumbnail?.url) urls.push(embed.thumbnail.url);
-  }
-
-  return [...new Set(urls)];
-}
-
 function extractMentionedUserIds(text) {
   const matches = String(text || "").match(/<@!?(\d+)>/g) || [];
   return matches.map((m) => m.replace(/\D/g, ""));
@@ -119,13 +101,6 @@ function splitMessage(text, maxLength = 1900) {
 
   if (remaining.length) chunks.push(remaining);
   return chunks;
-}
-
-function cleanTailMentions(text) {
-  return String(text || "")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/\s+$/g, "")
-    .trim();
 }
 
 async function getChannelContext(guild) {
@@ -165,7 +140,6 @@ async function getChannelContext(guild) {
 
       const rule = CHANNEL_RULES[wantedName] || {
         includeBots: false,
-        preferImages: false,
         limit: 10,
       };
 
@@ -173,46 +147,96 @@ async function getChannelContext(guild) {
       const sorted = [...messages.values()].reverse();
 
       const textLines = [];
-      const imageUrls = [];
       let latestCreatorMention = null;
 
       for (const m of sorted) {
         const hasText = !!m.content?.trim();
-        const images = extractImageUrls(m);
-        const hasImages = images.length > 0;
-
         if (!rule.includeBots && m.author.bot) continue;
-        if (!hasText && !hasImages) continue;
+        if (!hasText) continue;
 
-        if (hasText) {
-          const authorLabel = m.author.bot ? `${m.author.username} [BOT]` : m.author.username;
-          textLines.push(`- ${authorLabel}: ${m.content.trim()}`);
+        const authorLabel = m.author.bot ? `${m.author.username} [BOT]` : m.author.username;
+        textLines.push(`- ${authorLabel}: ${m.content.trim()}`);
 
-          const ids = extractMentionedUserIds(m.content);
-          if (wantedName === "neu-dazugekommen" && ids.length > 0) {
-            latestCreatorMention = `<@${ids[ids.length - 1]}>`;
-          }
-        }
-
-        if (hasImages) {
-          imageUrls.push(...images);
+        const ids = extractMentionedUserIds(m.content);
+        if (wantedName === "neu-dazugekommen" && ids.length > 0) {
+          latestCreatorMention = `<@${ids[ids.length - 1]}>`;
         }
       }
 
       contexts.push({
         channelName: channel.name,
-        channelId: channel.id,
         mention: `<#${channel.id}>`,
         text: textLines.slice(0, 40).join("\n"),
-        images: [...new Set(imageUrls)].slice(0, 6),
         latestCreatorMention,
       });
     } catch (err) {
-      console.error(`Fehler beim Lesen eines Channels (${wantedName}):`, err);
+      console.error(`Fehler beim Lesen von ${wantedName}:`, err);
     }
   }
 
   return contexts;
+}
+
+function detectTargetChannel(userText) {
+  const text = String(userText || "").toLowerCase();
+
+  if (text.includes("regelwerk")) return "regelwerk";
+  if (text.includes("neu") && text.includes("dazugekommen")) return "neu-dazugekommen";
+  if (text.includes("richtlinien")) return "richtlinien-faq";
+  if (text.includes("agentur faq") || text.includes("agentur-faq")) return "agentur-faq";
+  if (text.includes("updates")) return "updates";
+  if (text.includes("information")) return "information";
+  if (text.includes("umfragen")) return "umfragen";
+  if (text.includes("tipps") || text.includes("tricks")) return "tipps-und-tricks";
+  if (text.includes("live manager") || text.includes("live-manager")) return "live-manager";
+  if (text.includes("agentur info") || text.includes("agentur-info")) return "agentur-info";
+
+  return null;
+}
+
+function buildPrompt(channelContexts, userText, askerMention, greeting) {
+  let contextText = `Fragender Creator: ${askerMention}
+Begrüßung: ${greeting}
+
+Frage:
+${userText}
+
+Server-Kontexte:
+`;
+
+  if (channelContexts.length === 0) {
+    contextText += "Keine Channel-Kontexte gefunden.\n";
+  } else {
+    for (const c of channelContexts) {
+      contextText += `
+[CHANNEL]
+Name: ${c.channelName}
+Mention: ${c.mention}
+`;
+      if (c.latestCreatorMention) {
+        contextText += `Letzter Creator in diesem Channel: ${c.latestCreatorMention}\n`;
+      }
+      contextText += c.text?.trim()
+        ? `Text:\n${c.text}\n`
+        : `Text:\n- Keine Textnachrichten gefunden.\n`;
+    }
+  }
+
+  contextText += `
+WICHTIGE REGELN FÜR DEINE ANTWORT:
+- Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
+- Verwende niemals "User" oder "Nutzer", sondern allgemein immer "Creator".
+- Wenn du über eine konkrete Person sprichst, nutze die echte Mention, wenn vorhanden.
+- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention.
+- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Mention.
+- Wenn nach "regelwerk" gefragt wird, fasse die wichtigsten Regeln zusammen und erwähne ergänzende Hinweise, falls sie im Kontext stehen.
+- Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
+- Antworte locker, klar, hilfreich und nicht unnötig lang.
+- Keine erfundenen Namen oder Beispiele.
+- Wenn etwas im Kontext nicht sicher steht, sag das ehrlich.
+`;
+
+  return contextText;
 }
 
 client.on("messageCreate", async (message) => {
@@ -246,117 +270,35 @@ client.on("messageCreate", async (message) => {
 
     const greeting = pickGreeting();
     const askerMention = `<@${message.author.id}>`;
-    const channelContexts = await getChannelContext(message.guild);
+    const allContexts = await getChannelContext(message.guild);
+    const targetChannel = detectTargetChannel(userText);
 
-    const inputContent = [];
-    let contextText = `Fragender Creator: ${askerMention}
-Begrüßung: ${greeting}
-
-Frage:
-${userText}
-
-Server-Kontexte:
-`;
-
-    if (channelContexts.length === 0) {
-      contextText += "Keine Channel-Kontexte gefunden.\n";
-    } else {
-      for (const c of channelContexts) {
-        contextText += `
-[CHANNEL]
-Name: ${c.channelName}
-Mention: ${c.mention}
-`;
-        if (c.latestCreatorMention) {
-          contextText += `Letzter Creator in diesem Channel: ${c.latestCreatorMention}\n`;
-        }
-        contextText += c.text?.trim()
-          ? `Text:\n${c.text}\n`
-          : `Text:\n- Keine Textnachrichten gefunden.\n`;
-
-        if (c.images?.length) {
-          contextText += `Hinweis: Dieser Channel enthält Bilder/Grafiken.\n`;
-        }
-      }
+    let usedContexts = allContexts;
+    if (targetChannel) {
+      const filtered = allContexts.filter((c) => normalizeName(c.channelName) === normalizeName(targetChannel));
+      if (filtered.length > 0) usedContexts = filtered;
     }
 
-    contextText += `
-WICHTIGE REGELN FÜR DEINE ANTWORT:
-- Sprich den fragenden Creator am Anfang direkt mit seiner Mention an.
-- Verwende niemals "User" oder "Nutzer", sondern allgemein immer "Creator".
-- Wenn du über eine konkrete Person sprichst, nutze die echte Mention, wenn vorhanden.
-- Wenn nach "regelwerk" gefragt wird, fasse die wichtigsten Regeln zusammen UND erwähne auch ergänzende Regeln/Hinweise, falls sie im Kontext stehen.
-- Wenn du einen Channel nennst, nutze IMMER die echte Channel-Mention aus dem Feld "Mention".
-- Wenn du am Ende nochmal auf einen Channel verweist, dann wieder als echte Mention, nicht als normaler Text.
-- Wenn nach "neu-dazugekommen" gefragt wird, erwähne sinnvoll den zuletzt erkannten Creator, falls vorhanden.
-- Wenn Informationen aus Bildern stammen, sag ehrlich, dass du sie aus Bildern/Grafiken im jeweiligen Channel zusammenfasst.
-- Antworte locker, klar, hilfreich und nicht unnötig lang.
-- Keine erfundenen Namen oder Beispiele.
-`;
+    const prompt = buildPrompt(usedContexts, userText, askerMention, greeting);
 
-    inputContent.push({
-      type: "input_text",
-      text: contextText,
-    });
-
-    for (const c of channelContexts) {
-      for (const imageUrl of c.images || []) {
-        inputContent.push({
-          type: "input_image",
-          image_url: imageUrl,
-        });
-      }
-    }
+    console.log("=== USER QUESTION ===");
+    console.log(userText);
+    console.log("=== TARGET CHANNEL ===");
+    console.log(targetChannel || "keiner");
+    console.log("=== USED CONTEXT COUNT ===");
+    console.log(usedContexts.length);
 
     const response = await openai.responses.create({
       model: "gpt-4.1-mini",
-      instructions:
-        "Du bist Aura.KI von Aura Influence. Du antwortest auf Deutsch, natürlich, community-nah und präzise. Du sagst immer Creator statt User/Nutzer.",
-      input: [
-        {
-          role: "user",
-          content: inputContent,
-        },
-      ],
+      input: prompt,
     });
 
-    let answer = cleanTailMentions(
-      response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten."
-    );
+    const answer = String(response.output_text || "").trim();
 
-    const targetMentions = [];
-
-    if (/regelwerk/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "regelwerk");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/richtlinien/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "richtlinien-faq");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/agentur/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "agentur-faq");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/updates/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "updates");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/information/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "information");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/umfragen/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "umfragen");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/tipps|tricks/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "tipps-und-tricks");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/live/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "live-manager");
-      if (c?.mention) targetMentions.push(c.mention);
-    } else if (/agentur-info|agentur info/i.test(userText)) {
-      const c = channelContexts.find((x) => x.channelName === "agentur-info");
-      if (c?.mention) targetMentions.push(c.mention);
-    }
-
-    if (answer.length < 1500 && targetMentions.length) {
-      answer += `\n\nMehr dazu findest du direkt hier: ${[...new Set(targetMentions)].join(" ")}`;
+    if (!answer) {
+      console.error("Leere OpenAI-Antwort:", JSON.stringify(response, null, 2));
+      await message.reply("Ich konnte gerade nichts Sinnvolles antworten.");
+      return;
     }
 
     const parts = splitMessage(answer, 1900);
@@ -370,7 +312,7 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
   } catch (error) {
     console.error("Fehler im messageCreate-Handler:", error);
     try {
-      await message.reply("Es gab gerade einen Fehler. Versuch es gleich nochmal.");
+      await message.reply(`Es gab gerade einen Fehler. Versuch es gleich nochmal.\nFehler: ${error.message?.slice(0, 300) || "unbekannt"}`);
     } catch {}
   }
 });
