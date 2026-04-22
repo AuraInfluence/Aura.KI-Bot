@@ -92,6 +92,30 @@ function extractMentionedUserIds(text) {
   return matches.map((m) => m.replace(/\D/g, ""));
 }
 
+function splitMessage(text, maxLength = 1900) {
+  const chunks = [];
+  let remaining = String(text || "").trim();
+
+  while (remaining.length > maxLength) {
+    let cut = remaining.lastIndexOf("\n", maxLength);
+    if (cut < 900) cut = remaining.lastIndexOf(". ", maxLength);
+    if (cut < 900) cut = maxLength;
+
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+
+  if (remaining.length) chunks.push(remaining);
+  return chunks;
+}
+
+function cleanTailMentions(text) {
+  return String(text || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\s+$/g, "")
+    .trim();
+}
+
 async function getChannelContext(guild) {
   const contexts = [];
 
@@ -284,14 +308,34 @@ WICHTIGE REGELN FÜR DEINE ANTWORT:
       ],
     });
 
-    const answer =
-      response.output_text?.trim() ||
-      "Ich konnte gerade nichts Sinnvolles antworten.";
+    let answer = cleanTailMentions(response.output_text?.trim() || "Ich konnte gerade nichts Sinnvolles antworten.");
 
-    await message.reply({
-      content: answer.slice(0, 1900),
-      allowedMentions: { parse: ["users", "roles"] },
-    });
+    const fallbackMentions = channelContexts.map((c) => c.mention).filter(Boolean);
+    const targetMentions = [];
+
+    if (/regelwerk/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "regelwerk");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/richtlinien/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "richtlinien-faq");
+      if (c?.mention) targetMentions.push(c.mention);
+    } else if (/agentur/i.test(userText)) {
+      const c = channelContexts.find((x) => x.channelName === "agentur-faq");
+      if (c?.mention) targetMentions.push(c.mention);
+    }
+
+    if (answer.length < 1500 && targetMentions.length) {
+      answer += `\n\nMehr dazu findest du direkt hier: ${[...new Set(targetMentions)].join(" ")}`;
+    }
+
+    const parts = splitMessage(answer, 1900);
+
+    for (const part of parts) {
+      await message.reply({
+        content: part,
+        allowedMentions: { parse: ["users", "roles"] },
+      });
+    }
   } catch (error) {
     console.error("Fehler im messageCreate-Handler:", error);
     try {
